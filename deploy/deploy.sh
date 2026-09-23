@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Syncs the static app (index.html, src/, assets/) to vpsde. Uses an allowlist
-# rather than excludes, so anything else in the checkout (script/, tools/,
-# .agents/, .claude/worktrees/, docs, .git ...) can never leak onto the server.
+# Syncs the static app (index.html + src/) to vpsde. The server holds code
+# only: every sentence library and all learning data live in each user's own
+# Google Drive (or, for guests, their browser). Uses an allowlist, so anything
+# else in the checkout (data/, script/, tools/, .agents/, .claude/worktrees/,
+# docs, .git ...) can never leak onto the server.
 #
-# Files are staged first so cache-busting is automatic (nginx serves js/css/tsv
-# as immutable for 30 days):
-#   - every `?v=...` in index.html is replaced with a hash of that file;
-#   - every library manifest gets a `fileHash` of its data file, which
-#     src/library.js appends to the data URL.
-# The working tree is never modified.
+# Files are staged first so cache-busting is automatic (nginx serves js/css as
+# immutable for 30 days): every `?v=...` in index.html is replaced with a hash
+# of that file. The working tree is never modified.
 #
 # Usage: deploy/deploy.sh [--dry-run]
 # LANGLSRW_DEPLOY_TARGET overrides the destination (e.g. a local dir for testing).
@@ -28,12 +27,11 @@ trap 'rm -rf "$STAGE"' EXIT
 rsync -a \
   --include='/index.html' \
   --include='/src/***' \
-  --include='/assets/***' \
   --exclude='*' \
   ./ "$STAGE/"
 
 python3 - "$STAGE" <<'PY'
-import hashlib, json, pathlib, re, sys
+import hashlib, pathlib, re, sys
 
 stage = pathlib.Path(sys.argv[1])
 
@@ -49,15 +47,9 @@ def stamp(match):
         sys.exit(f"index.html references missing file: {match.group(1)}")
     return f'{match.group(1)}?v={short_hash(asset)}'
 
-html, count = re.subn(r'((?:src|assets)/[^"?\s]+)\?v=[^"\s]*', stamp, html)
+html, count = re.subn(r'(src/[^"?\s]+)\?v=[^"\s]*', stamp, html)
 index.write_text(html, encoding="utf-8")
 print(f"stamped {count} asset versions in index.html")
-
-for manifest_path in sorted(stage.glob("assets/libraries/*/manifest.json")):
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["fileHash"] = short_hash(manifest_path.parent / manifest["file"])
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"stamped {manifest_path.relative_to(stage)} fileHash={manifest['fileHash']}")
 PY
 
 echo "Deploying langLSRW to $REMOTE ..."

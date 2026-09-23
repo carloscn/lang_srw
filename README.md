@@ -30,9 +30,9 @@ http://localhost:8848/
 
 - **听**：导入 `.txt` / `.lrc` 或粘贴句子列表，顺序/随机/错题练习模式，英式发音朗读、慢速回放、单词回放，听写打分（准确率/速度/流畅度）。
 - **说**：按住说话，语音识别 + 录音，音量条与相似度/漏词/错词/多词反馈，可回放录音并与原句对比。
-- **句库**：内置 `常用英语句库`（3万余条中英对照句），本地搜索、分页预览，一键加入听说练习。
+- **句库**：服务器上不存任何句库。用户自己导入 txt / lrc / tsv（导入后保存，刷新不丢，记住每个句库练到第几句）；Google 用户的句库存成自己 Google Drive「langLSRW/libraries」里的 TSV 文件，可以在 Drive 里改名、下载、删除。原来内置的 3 万条常用句库留在仓库 `data/libraries/common-english-30150/sentences.tsv`，需要时自己导入。
 - **AI 语法分析**：手动触发，按句子缓存结果，避免重复计费；层级化 JSON 语法树渲染，可查看/复制原始 prompt 和 AI 返回内容。API Key 目前只存在浏览器本地存储，仅适合个人本地使用。
-- **用户与同步**：Google 登录，练习记录、设置和 AI 语法缓存同步到用户自己的 Google Drive（隐藏应用目录，无需后端）；也可用本机用户（游客模式，本地存储、JSON 导入导出）。配置步骤见 [deploy/README.md](deploy/README.md)。
+- **用户与同步**：Google 登录，句库、练习记录、训练进度、设置和 AI 语法缓存都存在用户自己的 Google Drive「langLSRW」文件夹（无需后端）；也可用本机用户（游客模式，本地存储、JSON 导入导出）。配置步骤见 [deploy/README.md](deploy/README.md)。
 - **通用设置**：与 nav.mltz.tech 一致的界面风格（浅色/深色跟随系统 + 默认绿/GitHub/Reddit/Twitter 四套色系，外加 Anki 风格）、语法角色配色自定义、可配置快捷键。
 
 更详细的实现状态、架构和已知边界见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。
@@ -44,12 +44,14 @@ langLSRW/
   index.html
   src/
     app.js                 # 主逻辑（听说读写、设置、用户、语法渲染）
-    library.js             # 句库加载与缓存
+    library-store.js       # 本机句库存储（IndexedDB）
+    google-drive.js        # Google 登录 + Drive 读写
+    cloud-sync.js          # 同步合并规则（tests/ 有单元测试）
     styles.css
     generated/grammar-prompt.js   # 生成产物，勿手改
-  assets/
-    materials/              # 默认听写材料、语法示例
-    libraries/common-english-30150/  # 内置句库（manifest.json + sentences.tsv）
+  data/                     # 不部署：原内置句库（可手动导入）、示例材料
+    libraries/common-english-30150/sentences.tsv
+    materials/
   tools/
     start-langlsrw-server.bat
     start-langlsrw-server.sh

@@ -12,7 +12,7 @@ if you don't have it.
 
 | Path | What |
 |---|---|
-| `deploy.sh` | rsyncs `index.html`, `src/`, `assets/` to `vpsde:/home/carlos/langlsrw/public/` using an **allowlist** — everything else (`script/`, `tools/`, `.agents/`, `.claude/worktrees/`, docs, `.git`) is never uploaded, and anything already on the server outside the allowlist is removed. |
+| `deploy.sh` | rsyncs `index.html` and `src/` (code only — no sentence libraries or other data) to `vpsde:/home/carlos/langlsrw/public/` using an **allowlist** — everything else (`data/`, `script/`, `tools/`, `.agents/`, `.claude/worktrees/`, docs, `.git`) is never uploaded, and anything already on the server outside the allowlist is removed. |
 | `nginx-lang-mltz.conf` | The nginx server block for `lang.mltz.tech`. Mirrors the pattern already used on this box for other `*.mltz.tech` subdomains (shared Cloudflare Origin Certificate, no new cert needed). |
 
 Real paths on vpsde (not in this repo, live only on the box):
@@ -52,9 +52,7 @@ no nginx changes needed for ordinary content updates.
 **No manual cache-busting.** nginx serves js/css/tsv as `immutable` for 30 days, so
 every URL must change when its content does. `deploy.sh` handles this on a staged copy
 (the working tree is untouched): each `?v=...` in `index.html` becomes a hash of that
-file, and each library `manifest.json` gets a `fileHash` that `src/library.js` appends
-to the data URL. `index.html` and manifests are served `no-cache`, so a deploy is
-visible on the next page load. The `?v=` values in the repo's `index.html` only
+file. `index.html` is served `no-cache`, so a deploy is visible on the next page load. The `?v=` values in the repo's `index.html` only
 matter for the local dev server.
 
 `LANGLSRW_DEPLOY_TARGET=/some/local/dir/ deploy/deploy.sh` stages into a local
@@ -63,7 +61,7 @@ directory instead of vpsde — handy for checking the output.
 ## Gotchas (carried over from this box's other static-site deploys)
 
 1. **This site is a real multi-file app, not a single HTML fragment** — `deploy.sh`
-   rsyncs the whole `src/`/`assets/` tree, unlike the single-file `scp` used for other
+   rsyncs the whole `src/` tree, unlike the single-file `scp` used for other
    sites on this box. Keep using `deploy.sh` rather than ad-hoc `scp` so excludes and
    `--delete` stay consistent (otherwise stale files can accumulate on the server).
 2. **TLS cert is shared — don't provision a new one.** `/etc/ssl/cloudflare/origin.crt`
@@ -86,16 +84,18 @@ directory instead of vpsde — handy for checking the output.
 ## Google sign-in (one-time setup, done by the owner)
 
 Google sign-in is pure front-end: Google Identity Services issues a short-lived access
-token in the browser, and each user's data lives in **their own** Google Drive
-`appDataFolder` (a hidden per-app folder — you cannot see other users' data, and nothing
-is stored on vpsde). Until a client ID is configured the button is shown disabled and
+token in the browser, and each user's data lives in **their own** Google Drive, in a
+visible `langLSRW/` folder (`langlsrw-data.json` for history/settings/AI cache/progress,
+`libraries/*.tsv` for sentence libraries). You cannot see other users' data, and nothing
+is stored on vpsde. Until a client ID is configured the button is shown disabled and
 local (guest) users work as before.
 
 1. <https://console.cloud.google.com/> → create a project (e.g. `langLSRW`).
 2. APIs & Services → Library → enable **Google Drive API**.
 3. Google Auth Platform → configure the consent screen: user type **External**, app name
    `langLSRW`, support email. Under *Data access* add the scopes `openid`, `email`,
-   `profile` and `https://www.googleapis.com/auth/drive.appdata`.
+   `profile` and `https://www.googleapis.com/auth/drive.file` (only files this app
+   creates — it cannot see anything else in the user's Drive).
 4. *Audience*: leave the app in **Testing** and add every Google account that should be
    able to sign in as a test user (max 100). Opening it to anyone means publishing the
    app, which may require Google's verification.

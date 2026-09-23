@@ -2234,12 +2234,14 @@
 
     .library-layout {
       display: grid;
-      grid-template-columns: 180px minmax(0, 1fr);
+      grid-template-columns: 220px minmax(0, 1fr);
       min-height: 0;
     }
 
     .library-sidebar {
       display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-height: 0;
       align-content: start;
       gap: 4px;
       border-right: 1px solid var(--line);
@@ -2248,10 +2250,90 @@
     }
 
     .library-type-button {
+      display: grid;
+      gap: 1px;
       width: 100%;
+      min-height: 44px;
+      padding: 5px 10px;
       border-color: transparent;
       background: transparent;
       text-align: left;
+    }
+
+    .library-type-button span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .library-type-button small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .library-import-btn {
+      width: 100%;
+      margin-bottom: 6px;
+    }
+
+    .library-list {
+      display: grid;
+      align-content: start;
+      gap: 4px;
+      min-height: 0;
+      overflow-y: auto;
+    }
+
+    .library-content[hidden],
+    .library-empty[hidden] {
+      display: none;
+    }
+
+    .library-empty {
+      padding: 20px 22px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+
+    .library-empty h3 {
+      margin: 0 0 6px;
+      font-size: 17px;
+    }
+
+    .library-empty p,
+    .library-empty li {
+      color: var(--chip);
+      font-size: 13px;
+    }
+
+    .library-empty ul {
+      margin: 6px 0 10px;
+      padding-left: 18px;
+    }
+
+    .library-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .empty-library {
+      display: grid;
+      justify-items: start;
+      gap: 8px;
+      padding: 14px 12px;
+      border: 1px dashed var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+    }
+
+    .empty-library strong {
+      font-size: 18px;
+    }
+
+    .empty-library span {
+      color: var(--muted);
+      font-size: 13px;
     }
 
     .library-type-button.is-active {
@@ -2388,10 +2470,9 @@
       }
 
       .library-sidebar {
-        grid-template-columns: repeat(5, max-content);
-        overflow-x: auto;
+        max-height: 34vh;
         border-right: 0;
-        border-bottom: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+        border-bottom: 1px solid var(--line);
       }
 
       .library-sentence-row {

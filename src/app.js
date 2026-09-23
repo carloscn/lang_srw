@@ -1,15 +1,3 @@
-const fallbackSentences = [
-      "Hello.",
-      "Good morning.",
-      "Nice to meet you.",
-      "How are you?",
-      "I am learning English.",
-      "Please speak slowly.",
-      "Could you say that again?",
-      "I would like a cup of coffee.",
-      "Where is the nearest subway station?",
-      "I am here on vacation."
-    ];
 
     const defaultShortcuts = {
       speakSentence: "`",
@@ -137,7 +125,7 @@ const fallbackSentences = [
     }
 
     const state = {
-      sentences: normalizeSentenceList(fallbackSentences),
+      sentences: [],
       index: 0,
       events: [],
       startedAt: 0,
@@ -157,8 +145,11 @@ const fallbackSentences = [
       grammarVisible: false,
       grammarExpansionMode: "main",
       grammarExpandedNodeIds: new Set(),
+      libraries: [],
+      activeLibraryId: "",
+      progress: null,
       library: {
-        manifest: null,
+        selectedId: "",
         items: [],
         filteredItems: [],
         query: "",
@@ -417,11 +408,13 @@ const fallbackSentences = [
       URL.revokeObjectURL(url);
     }
 
-    function exportData() {
+    async function exportData() {
       const date = new Date().toISOString().slice(0, 10);
-      const username = state.currentUser || "guest";
+      const username = isGoogleUser() ? (googleDrive.getProfile()?.email || "google") : (state.currentUser || "guest");
       const safeName = username.replace(/[^a-z0-9_-]+/gi, "_");
-      downloadJson(`langlsrw-${safeName}-${date}.json`, collectBackupData());
+      const libraries = (await libraryStore.list(state.currentUser))
+        .map(({ user, driveFileId, ...library }) => library);
+      downloadJson(`langlsrw-${safeName}-${date}.json`, { ...collectBackupData(), libraries, progress: state.progress });
     }
 
     function restoreBackupData(data) {
@@ -447,20 +440,40 @@ const fallbackSentences = [
         localStorage.setItem("langLSRWCurrentUser", currentUser);
       }
 
-      state.sentences = normalizeSentenceList(data.sentences);
-      if (!state.sentences.length) state.sentences = normalizeSentenceList(fallbackSentences);
-      state.sentences.forEach((item) => {
+      normalizeSentenceList(data.sentences).forEach((item) => {
         if (item.grammar) saveGrammarCache(item.text, item.grammar, item.grammarRaw || item.grammar);
       });
-      state.index = Number.isInteger(data.currentIndex)
-        ? Math.min(Math.max(0, data.currentIndex), state.sentences.length - 1)
-        : 0;
-      $("sourceStatus").textContent = `当前句库：备份数据（${state.sentences.length}句）`;
-      loadUserHistory();
-      updateUserBadge();
-      resetCurrent();
-      hideLogin();
-      alert("数据已导入。");
+      restoreBackupLibraries(data).then(() => {
+        updateUserBadge();
+        hideLogin();
+        return loadUserData();
+      }).then(() => alert("数据已导入。"));
+    }
+
+    // Backups carry libraries (new format) or just the sentence list in use
+    // (old format, imported as one library). Existing ids are overwritten.
+    async function restoreBackupLibraries(data) {
+      if (!state.currentUser) return;
+      const now = new Date().toISOString();
+      const libraries = Array.isArray(data.libraries) ? data.libraries : [];
+      for (const library of libraries) {
+        if (!library?.id || !Array.isArray(library.items)) continue;
+        await libraryStore.put(state.currentUser, { ...library, updatedAt: now });
+      }
+      const legacy = normalizeSentenceList(data.sentences);
+      if (!libraries.length && legacy.length) {
+        await libraryStore.put(state.currentUser, {
+          id: libraryStore.newId(),
+          name: "备份导入",
+          source: "JSON 备份",
+          createdAt: now,
+          updatedAt: now,
+          items: legacy.map((item, index) => ({ id: String(index + 1), text: item.text, translation: item.translation }))
+        });
+      }
+      if (data.progress && typeof data.progress === "object") {
+        storeProgress({ ...data.progress, updatedAt: now });
+      }
     }
 
     function renderLoginUsers() {
@@ -495,10 +508,9 @@ const fallbackSentences = [
       state.currentUser = username;
       localStorage.setItem("langLSRWCurrentUser", username);
       saveKnownUser(username);
-      loadUserHistory();
-      resetCurrent();
       updateUserBadge();
       hideLogin();
+      loadUserData();
     }
 
     // ---- Google sign-in + Drive sync -------------------------------------
@@ -506,7 +518,7 @@ const fallbackSentences = [
     // in localStorage like a local user's and mirrored to one JSON file in the
     // account's Drive appDataFolder (see src/google-drive.js, src/cloud-sync.js).
     const settingsMetaKey = "langLSRWSettingsMeta";
-    const cloud = { running: null, timer: 0 };
+    const cloud = { running: null, timer: 0, again: false };
 
     function settingsValues(source) {
       const values = {};
@@ -557,7 +569,11 @@ const fallbackSentences = [
 
     async function syncWithCloud({ interactive = false } = {}) {
       if (!isGoogleUser()) return;
-      if (cloud.running) return cloud.running;
+      if (cloud.running) {
+        // Something changed mid-sync: run once more when this one finishes.
+        cloud.again = true;
+        return cloud.running;
+      }
       clearTimeout(cloud.timer);
       const run = async () => {
         try {
@@ -570,19 +586,33 @@ const fallbackSentences = [
             await googleDrive.reconnect();
           }
           setCloudStatus("syncing", "正在同步…");
+          const user = state.currentUser;
+          const libraryChanges = await syncLibraries(user);
+          if (user !== state.currentUser) return;
+
           const remote = await googleDrive.pull();
           const local = {
             history: state.history,
             grammarCache: loadGrammarCache(),
-            settings: localSettingsSnapshot()
+            settings: localSettingsSnapshot(),
+            progress: state.progress || loadProgress()
           };
           const merged = cloudSync.merge(local, remote);
+          if (user !== state.currentUser) return;
 
           state.history = merged.history;
           saveUserHistory();
           renderHistory();
           storeGrammarCache(merged.grammarCache);
           if (merged.settings !== local.settings) applySyncedSettings(merged.settings);
+          if (merged.progress) storeProgress(merged.progress);
+
+          await reloadLibraries();
+          // Only move the practice view when something it shows changed.
+          if (merged.progress !== local.progress || libraryChanges.has(state.activeLibraryId)
+            || !state.libraries.some((item) => item.id === state.activeLibraryId)) {
+            applyProgressToPractice();
+          }
 
           if (!cloudSync.sameContent(merged, remote)) {
             await googleDrive.push({ ...merged, updatedAt: new Date().toISOString() });
@@ -601,8 +631,53 @@ const fallbackSentences = [
       // even when run() returns without awaiting anything.
       cloud.running = run().finally(() => {
         cloud.running = null;
+        if (cloud.again) {
+          cloud.again = false;
+          scheduleCloudSync(0);
+        }
       });
       return cloud.running;
+    }
+
+    // Returns the ids of local libraries whose content or existence changed.
+    async function syncLibraries(user) {
+      const local = await libraryStore.list(user);
+      const tombstones = loadTombstones();
+      const plan = cloudSync.planLibrarySync({ local, remote: await googleDrive.listLibraries(), tombstones });
+      const localById = new Map(local.map((library) => [library.id, library]));
+      const changed = new Set();
+
+      for (const fileId of plan.trashRemote) await googleDrive.trashFile(fileId);
+      for (const id of plan.deleteLocal) {
+        await libraryStore.remove(user, id);
+        changed.add(id);
+      }
+      for (const { id, name, fileId } of plan.rename) {
+        await libraryStore.put(user, { ...localById.get(id), name, driveFileId: fileId });
+      }
+      for (const file of plan.download) {
+        const existing = localById.get(file.libraryId);
+        await libraryStore.put(user, {
+          id: file.libraryId,
+          name: file.name,
+          source: existing?.source || "Google Drive",
+          createdAt: existing?.createdAt || file.updatedAt,
+          updatedAt: file.updatedAt,
+          items: parseTsvLibrary(await googleDrive.downloadLibrary(file.fileId), { hasIdColumn: true }),
+          driveFileId: file.fileId
+        });
+        changed.add(file.libraryId);
+      }
+      for (const { library, fileId } of plan.upload) {
+        const { user: _owner, ...record } = library;
+        const driveFileId = await googleDrive.uploadLibrary(fileId, record, cloudSync.libraryToTsv(record.items));
+        // Re-read: the user may have edited this library while it uploaded.
+        const latest = await libraryStore.get(user, library.id);
+        if (latest) await libraryStore.put(user, { ...latest, driveFileId });
+      }
+      const remaining = loadTombstones().filter((id) => !tombstones.includes(id));
+      localStorage.setItem(tombstoneKey(user), JSON.stringify(remaining));
+      return changed;
     }
 
     function scheduleCloudSync(delay = 4000) {
@@ -619,22 +694,39 @@ const fallbackSentences = [
         const previousUser = state.currentUser;
         const googleUser = `${googleUserPrefix}${profile.sub}`;
         let guestHistory = [];
+        let guestLibraries = [];
         if (previousUser && !isGoogleUser(previousUser)) {
           const history = JSON.parse(localStorage.getItem(userStorageKey(previousUser)) || "[]");
-          if (history.length && confirm(`把本机用户「${previousUser}」的 ${history.length} 条练习记录合并到 Google 账号（${profile.email}）吗？\n本机用户本身会保留。`)) {
+          const libraries = await libraryStore.list(previousUser).catch(() => []);
+          const parts = [
+            libraries.length ? `${libraries.length} 个句库` : "",
+            history.length ? `${history.length} 条练习记录` : ""
+          ].filter(Boolean).join("和");
+          if (parts && confirm(`把本机用户「${previousUser}」的${parts}导入 Google 账号（${profile.email}）吗？\n句库会上传到你的 Google Drive；本机用户本身会保留。`)) {
             guestHistory = history;
+            guestLibraries = libraries;
           }
         }
         state.currentUser = googleUser;
         localStorage.setItem("langLSRWCurrentUser", googleUser);
+        for (const { user, driveFileId, ...library } of guestLibraries) {
+          await libraryStore.put(googleUser, { ...library, updatedAt: new Date().toISOString() });
+        }
+        if (guestLibraries.length) {
+          // Carry the guest's place too; stamped now so it wins the first sync.
+          const guestProgress = localStorage.getItem(progressKey(previousUser));
+          if (guestProgress) {
+            localStorage.setItem(progressKey(googleUser), JSON.stringify({ ...JSON.parse(guestProgress), updatedAt: new Date().toISOString() }));
+          }
+        }
         loadUserHistory();
         if (guestHistory.length) {
           state.history = cloudSync.mergeHistory(state.history, guestHistory);
           saveUserHistory();
         }
-        resetCurrent();
         updateUserBadge();
         hideLogin();
+        await loadUserData();
         await syncWithCloud();
       } catch (error) {
         alert(error.message || "Google 登录失败。");
@@ -663,6 +755,11 @@ const fallbackSentences = [
       if (!confirmed) return;
 
       localStorage.removeItem(userStorageKey(username));
+      localStorage.removeItem(progressKey(username));
+      localStorage.removeItem(tombstoneKey(username));
+      libraryStore.removeAll(username).catch(() => {});
+      state.libraries = [];
+      showActiveLibrary(null);
       const users = getKnownUsers().filter((user) => user !== username);
       localStorage.setItem("langLSRWKnownUsers", JSON.stringify(users));
       localStorage.removeItem("langLSRWCurrentUser");
@@ -710,6 +807,48 @@ const fallbackSentences = [
       return null;
     }
 
+    // Tab-separated libraries. Two shapes are accepted:
+    //   id<TAB>sentence<TAB>translation   our Drive format and the old built-in library
+    //   sentence<TAB>translation[<TAB>…]  Anki / manythings.org / Tatoeba exports
+    // hasIdColumn: true for our own Drive files (never guessed, so a download
+    // round-trips exactly); undefined for user imports, where it is detected.
+    function parseTsvLibrary(text, { hasIdColumn } = {}) {
+      const rows = String(text || "")
+        .replace(/^\uFEFF/, "")
+        .split(/\r?\n/)
+        .map((line) => line.split("\t").map((column) => column.trim()))
+        .filter((columns) => columns.length >= 2 && columns.some(Boolean));
+      const withId = hasIdColumn ?? detectIdColumn(rows);
+      const byText = new Map();
+      rows.forEach((columns) => {
+        const [id, sentence, translation] = withId ? columns : ["", columns[0], columns[1]];
+        if (!sentence) return;
+        const existing = byText.get(sentence);
+        if (!existing) {
+          byText.set(sentence, { id: id || "", text: sentence, translation: translation || "" });
+        } else if (translation && !existing.translation.split(" / ").includes(translation)) {
+          // Same sentence listed with several translations (common in Anki decks).
+          existing.translation = existing.translation ? `${existing.translation} / ${translation}` : translation;
+        }
+      });
+      return [...byText.values()];
+    }
+
+    function detectIdColumn(rows) {
+      const sample = rows.slice(0, 200);
+      const numericFirst = sample.filter((columns) => columns.length >= 3 && /^\d+$/.test(columns[0])).length;
+      return sample.length > 0 && numericFirst >= sample.length * 0.8;
+    }
+
+    function looksLikeTsvLibrary(text) {
+      const lines = String(text || "").split(/\r?\n/).filter((line) => line.trim()).slice(0, 200);
+      return lines.length > 0 && lines.filter((line) => line.includes("\t")).length >= lines.length * 0.8;
+    }
+
+    function parseLibraryText(text, filename = "") {
+      return looksLikeTsvLibrary(text) ? parseTsvLibrary(text) : parseSentences(text, filename);
+    }
+
     function parseSentences(text, filename = "") {
       const looksLikeLrc = /\.lrc$/i.test(filename) || /\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]/.test(text);
       const lines = text
@@ -742,8 +881,6 @@ const fallbackSentences = [
         return true;
       });
     }
-
-    const commonLibraryManifestUrl = "assets/libraries/common-english-30150/manifest.json";
 
     function closeLibraryModal() {
       $("libraryModal").hidden = true;
@@ -809,26 +946,203 @@ const fallbackSentences = [
       renderLibraryPage();
     }
 
-    async function loadCommonLibrary() {
-      if (state.library.items.length || state.library.loading) return;
-      state.library.loading = true;
-      $("libraryStatus").textContent = "正在加载常用句库...";
-      $("librarySentenceList").innerHTML = '<div class="empty">正在读取 30,150 条双语句子...</div>';
+    // ---- Sentence libraries + training progress ---------------------------
+    // Libraries live in IndexedDB per user (src/library-store.js). For a Google
+    // user they mirror langLSRW/libraries/*.tsv in Drive; progress (active
+    // library, position per library, mode) rides in the main sync document.
+    const libraryStore = window.langLSRWLibraryStore;
+
+    function progressKey(user = state.currentUser) {
+      return `langLSRWProgress:${user}`;
+    }
+
+    function tombstoneKey(user = state.currentUser) {
+      return `langLSRWLibraryTombstones:${user}`;
+    }
+
+    function loadProgress() {
       try {
-        const result = await window.langLSRWLibrary.load(commonLibraryManifestUrl);
-        state.library.manifest = result.manifest;
-        state.library.items = result.items;
-        state.library.filteredItems = result.items;
-        $("libraryName").textContent = result.manifest.name;
-        $("libraryMeta").textContent = `${result.items.length.toLocaleString()} 条 · 英文原句 + 中文翻译 · v${result.manifest.version}`;
-        $("useLibraryBtn").disabled = false;
-        renderLibraryPage();
-      } catch (error) {
-        $("libraryStatus").textContent = `加载失败：${error.message || error}`;
-        $("librarySentenceList").innerHTML = '<div class="empty">请确认通过本地服务器打开网页，且句库文件完整。</div>';
-      } finally {
-        state.library.loading = false;
+        const saved = JSON.parse(localStorage.getItem(progressKey()) || "null");
+        if (saved && typeof saved === "object") return { positions: {}, ...saved };
+      } catch {}
+      return { activeLibraryId: "", positions: {}, mode: "ordered", updatedAt: new Date(0).toISOString() };
+    }
+
+    function storeProgress(progress) {
+      state.progress = progress;
+      if (state.currentUser) localStorage.setItem(progressKey(), JSON.stringify(progress));
+    }
+
+    function saveProgress() {
+      if (!state.currentUser) return;
+      const positions = { ...(state.progress?.positions || {}) };
+      if (state.activeLibraryId) positions[state.activeLibraryId] = state.index;
+      storeProgress({
+        activeLibraryId: state.activeLibraryId,
+        positions,
+        mode: $("modeSelect").value,
+        updatedAt: new Date().toISOString()
+      });
+      scheduleCloudSync();
+    }
+
+    function loadTombstones() {
+      try {
+        return JSON.parse(localStorage.getItem(tombstoneKey()) || "[]");
+      } catch {
+        return [];
       }
+    }
+
+    function libraryMeta(library) {
+      const translated = library.items.filter((item) => item.translation).length;
+      return `${library.items.length.toLocaleString()} 句 · ${translated.toLocaleString()} 句有翻译`;
+    }
+
+    async function reloadLibraries() {
+      state.libraries = await libraryStore.list(state.currentUser);
+      if (!$("libraryModal").hidden) renderLibraryModal();
+    }
+
+    function showActiveLibrary(library, index = 0) {
+      state.activeLibraryId = library ? library.id : "";
+      state.sentences = library ? normalizeSentenceList(library.items) : [];
+      state.index = state.sentences.length ? Math.min(Math.max(0, Number(index) || 0), state.sentences.length - 1) : 0;
+      $("sourceStatus").textContent = library
+        ? `当前句库：${library.name}（${libraryMeta(library)}）`
+        : "还没有句库：打开「句库」导入。";
+    }
+
+    // Put the practice view where the progress says (after login, reload or sync).
+    function applyProgressToPractice() {
+      const progress = state.progress || loadProgress();
+      if (["ordered", "random", "mistakes"].includes(progress.mode)) $("modeSelect").value = progress.mode;
+      const library = state.libraries.find((item) => item.id === progress.activeLibraryId) || state.libraries[0] || null;
+      showActiveLibrary(library, library ? progress.positions?.[library.id] : 0);
+      resetCurrent();
+    }
+
+    async function loadUserData() {
+      loadUserHistory();
+      state.progress = loadProgress();
+      try {
+        await reloadLibraries();
+      } catch (error) {
+        state.libraries = [];
+        $("sourceStatus").textContent = `读取本机句库失败：${error.message || error}`;
+      }
+      applyProgressToPractice();
+    }
+
+    function useLibrary(id) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library) return;
+      if (state.activeLibraryId) saveProgress();
+      showActiveLibrary(library, state.progress?.positions?.[id]);
+      saveProgress();
+      closeLibraryModal();
+      resetCurrent(true);
+    }
+
+    async function createLibrary({ name, source, items }) {
+      if (!state.currentUser) {
+        alert("请先登录或选择本机用户，再导入句库。");
+        return null;
+      }
+      const now = new Date().toISOString();
+      const library = await libraryStore.put(state.currentUser, {
+        id: libraryStore.newId(),
+        name: String(name || "未命名句库").trim().slice(0, 80) || "未命名句库",
+        source: source || "",
+        createdAt: now,
+        updatedAt: now,
+        items: items.map((item, index) => ({
+          id: String(item.id || index + 1),
+          text: item.text,
+          translation: item.translation || ""
+        }))
+      });
+      await reloadLibraries();
+      useLibrary(library.id);
+      scheduleCloudSync(500);
+      return library;
+    }
+
+    async function renameLibrary(id) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library) return;
+      const name = prompt("句库名称", library.name)?.trim();
+      if (!name || name === library.name) return;
+      await libraryStore.put(state.currentUser, { ...library, name: name.slice(0, 80), updatedAt: new Date().toISOString() });
+      await reloadLibraries();
+      if (state.activeLibraryId === id) showActiveLibrary(state.libraries.find((item) => item.id === id), state.index);
+      scheduleCloudSync(500);
+    }
+
+    async function deleteLibrary(id) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library) return;
+      const where = isGoogleUser() ? "本机和 Google Drive 里的" : "本机的";
+      if (!confirm(`确定删除句库「${library.name}」吗？${where}这个句库都会删除（Drive 里的文件会移到回收站）。`)) return;
+      await libraryStore.remove(state.currentUser, id);
+      if (library.driveFileId) {
+        localStorage.setItem(tombstoneKey(), JSON.stringify([...new Set([...loadTombstones(), id])]));
+      }
+      const positions = { ...(state.progress?.positions || {}) };
+      delete positions[id];
+      state.progress = { ...state.progress, positions };
+      await reloadLibraries();
+      if (state.activeLibraryId === id) {
+        showActiveLibrary(state.libraries[0] || null, state.libraries[0] ? positions[state.libraries[0].id] : 0);
+        resetCurrent();
+      }
+      saveProgress();
+      scheduleCloudSync(500);
+    }
+
+    // Keep an edit to the current sentence (e.g. a translation) in its library.
+    async function persistCurrentSentence() {
+      const library = state.libraries.find((item) => item.id === state.activeLibraryId);
+      const item = normalizeSentenceItem(state.sentences[state.index]);
+      if (!library || !library.items[state.index]) return;
+      const items = library.items.slice();
+      items[state.index] = { ...items[state.index], translation: item.translation };
+      await libraryStore.put(state.currentUser, { ...library, items, updatedAt: new Date().toISOString() });
+      await reloadLibraries();
+      scheduleCloudSync();
+    }
+
+    function selectLibraryInModal(id) {
+      const library = state.libraries.find((item) => item.id === id) || null;
+      state.library.selectedId = library ? library.id : "";
+      state.library.items = library ? normalizeSentenceList(library.items) : [];
+      state.library.query = "";
+      state.library.page = 0;
+      $("librarySearchInput").value = "";
+      state.library.filteredItems = state.library.items;
+      renderLibraryModal();
+    }
+
+    function renderLibraryModal() {
+      $("libraryStorageNote").textContent = isGoogleUser()
+        ? "保存在你的 Google Drive「langLSRW/libraries」文件夹，可以在 Drive 里改名、下载或删除。"
+        : "游客模式：句库只保存在这台设备的浏览器里。登录 Google 后可以导入 Drive。";
+      const selected = state.libraries.find((item) => item.id === state.library.selectedId) || null;
+      $("libraryList").innerHTML = state.libraries.length
+        ? state.libraries.map((library) => `
+          <button class="library-type-button ${library.id === state.library.selectedId ? "is-active" : ""}" type="button" data-library-id="${escapeHtml(library.id)}">
+            <span>${escapeHtml(library.name)}</span>
+            <small>${library.items.length.toLocaleString()} 句${library.id === state.activeLibraryId ? " · 练习中" : ""}</small>
+          </button>`).join("")
+        : '<div class="small-note">还没有句库。</div>';
+      $("libraryEmpty").hidden = Boolean(selected);
+      $("libraryDetail").hidden = !selected;
+      if (!selected) return;
+      $("libraryName").textContent = selected.name;
+      const cloud = isGoogleUser() ? (selected.driveFileId ? " · 已存到 Google Drive" : " · 等待同步到 Google Drive") : " · 仅保存在本机";
+      $("libraryMeta").textContent = `${libraryMeta(selected)}${selected.source ? ` · 来源 ${selected.source}` : ""}${cloud}`;
+      $("useLibraryBtn").textContent = selected.id === state.activeLibraryId ? "继续练习" : "使用此句库";
+      renderLibraryPage();
     }
 
     async function openLibraryModal() {
@@ -836,53 +1150,31 @@ const fallbackSentences = [
       clearPeekedWord();
       if (state.speaking.holdActive) scheduleStopSpeakingPractice();
       $("libraryModal").hidden = false;
-      await loadCommonLibrary();
-      $("librarySearchInput").focus();
-    }
-
-    function useCommonLibrary() {
-      if (!state.library.items.length || !state.library.manifest) return;
-      state.sentences = normalizeSentenceList(state.library.items);
-      state.index = 0;
-      $("sourceStatus").textContent = `当前句库：${state.library.manifest.name}（${state.sentences.length.toLocaleString()}句）`;
-      closeLibraryModal();
-      resetCurrent(true);
+      await reloadLibraries();
+      selectLibraryInModal(state.library.selectedId && state.libraries.some((item) => item.id === state.library.selectedId)
+        ? state.library.selectedId
+        : state.activeLibraryId || state.libraries[0]?.id || "");
+      if (state.libraries.length) $("librarySearchInput").focus();
     }
 
     async function importSentenceFile(file) {
       if (!file) return false;
-      if (!/\.(txt|lrc)$/i.test(file.name) && !/^text\//i.test(file.type || "")) {
-        alert("请导入 .txt 或 .lrc 文件。");
+      if (!/\.(txt|lrc|tsv)$/i.test(file.name) && !/^text\//i.test(file.type || "")) {
+        alert("请导入 .txt、.lrc 或 .tsv 文件。");
         return false;
       }
-      const text = await file.text();
-      const sentences = parseSentences(text, file.name);
+      const sentences = parseLibraryText(await file.text(), file.name);
       if (!sentences.length) {
         alert("没有识别到可练习的句子。");
         return false;
       }
-      state.sentences = sentences;
-      state.index = 0;
-      $("sourceStatus").textContent = sentenceSourceLabel(file.name, sentences);
-      resetCurrent(true);
       closeTopMenus();
-      return true;
-    }
-
-    async function tryLoadDefaultFile() {
-      try {
-        const response = await fetch("assets/materials/default-bilingual.lrc", { cache: "no-store" });
-        if (!response.ok) return;
-        const text = await response.text();
-        const sentences = parseSentences(text, "assets/materials/default-bilingual.lrc");
-        if (sentences.length) {
-          state.sentences = sentences;
-          $("sourceStatus").textContent = sentenceSourceLabel("assets/materials/default-bilingual.lrc", sentences);
-          render();
-        }
-      } catch {
-        // Direct file opening may block fetch; import and paste still work.
-      }
+      const library = await createLibrary({
+        name: file.name.replace(/\.(txt|lrc|tsv)$/i, ""),
+        source: file.name,
+        items: sentences
+      });
+      return Boolean(library);
     }
 
     function currentSentence() {
@@ -898,7 +1190,8 @@ const fallbackSentences = [
       item.translation = $("translationInput").value.trim();
       state.sentences[state.index] = item;
       renderTarget();
-      $("sourceStatus").textContent = `当前句库：已更新当前句翻译（${state.sentences.length}句）`;
+      persistCurrentSentence();
+      $("sourceStatus").textContent = "当前句翻译已保存到句库。";
     }
 
     function currentGrammar() {
@@ -1288,11 +1581,6 @@ const fallbackSentences = [
       menu.style.left = `${Math.max(8, Math.min(requestedX, window.innerWidth - menuRect.width - 8))}px`;
       menu.style.top = `${Math.max(8, Math.min(requestedY, window.innerHeight - menuRect.height - 8))}px`;
       $("reanalyzeGrammarBtn").focus();
-    }
-
-    function sentenceSourceLabel(name, sentences) {
-      const translated = normalizeSentenceList(sentences).filter((item) => item.translation).length;
-      return `当前句库：${name}（${sentences.length}句，${translated}句有翻译）`;
     }
 
     function saveSpeechSettings() {
@@ -2242,6 +2530,7 @@ const fallbackSentences = [
 
     async function startSpeakingPractice() {
       clearScheduledSpeakingStop();
+      if (!state.sentences.length) return;
       if (state.speaking.isStarting || state.speaking.isRecognizing || state.speaking.isRecording) return;
       state.speaking.isStarting = true;
       state.speaking.stopAfterStart = false;
@@ -2357,7 +2646,24 @@ const fallbackSentences = [
       return { accuracy, cpm, wpm, pauseCount, fluency, errors, typedChars, targetLength: target.length, avgInterval };
     }
 
+    function renderEmptyTarget() {
+      targetEl.className = "target";
+      targetEl.innerHTML = `
+        <div class="empty-library">
+          <strong>还没有句库</strong>
+          <span>${isGoogleUser()
+            ? "导入 txt / lrc / tsv 句库，它会保存到你的 Google Drive「langLSRW」文件夹，换设备登录即可继续。"
+            : "导入 txt / lrc / tsv 句库开始练习。游客模式下句库只保存在这台设备的浏览器里。"}</span>
+          <button class="primary" type="button" data-open-library>打开句库</button>
+        </div>`;
+      counterEl.textContent = "0 / 0";
+    }
+
     function renderTarget() {
+      if (!state.sentences.length) {
+        renderEmptyTarget();
+        return;
+      }
       const target = currentSentence();
       const translation = currentTranslation();
       const hasGrammarCache = Boolean(currentGrammar());
@@ -2491,6 +2797,7 @@ const fallbackSentences = [
     }
 
     function render() {
+      typingBox.disabled = !state.sentences.length;
       renderTarget();
       renderTypedPreview();
       renderErrors();
@@ -2500,7 +2807,9 @@ const fallbackSentences = [
 
     function switchSpeakingSentence(nextIndex, shouldSpeak = false) {
       stopSpeakingPractice();
+      if (!state.sentences.length) return;
       state.index = (nextIndex + state.sentences.length) % state.sentences.length;
+      saveProgress();
       state.grammarVisible = false;
       resetGrammarInteraction();
       typingBox.value = "";
@@ -2539,6 +2848,7 @@ const fallbackSentences = [
     }
 
     function pickSentenceIndex(direction = 1) {
+      if (!state.sentences.length) return 0;
       const mode = $("modeSelect").value;
       if (mode === "random") {
         if (state.sentences.length <= 1) return 0;
@@ -2578,12 +2888,16 @@ const fallbackSentences = [
     }
 
     function goNextSentence() {
+      if (!state.sentences.length) return;
       state.index = pickNextIndex();
+      saveProgress();
       resetCurrent(true);
     }
 
     function goPreviousSentence() {
+      if (!state.sentences.length) return;
       state.index = pickSentenceIndex(-1);
+      saveProgress();
       resetCurrent(true);
     }
 
@@ -2598,6 +2912,7 @@ const fallbackSentences = [
     }
 
     function finishCurrent() {
+      if (!state.sentences.length) return;
       if (!typingBox.value.trim() && !state.startedAt) return;
       state.finished = true;
       const metrics = calculateMetrics();
@@ -2613,8 +2928,8 @@ const fallbackSentences = [
       state.history.unshift(record);
       state.history = state.history.slice(0, 80);
       saveUserHistory();
-      scheduleCloudSync();
       state.index = pickNextIndex();
+      saveProgress();
       resetCurrent(true);
     }
 
@@ -2674,18 +2989,22 @@ const fallbackSentences = [
       event.target.value = "";
     });
 
-    $("useTextBtn").addEventListener("click", () => {
-      const sentences = parseSentences($("sentenceInput").value);
+    $("useTextBtn").addEventListener("click", async () => {
+      const sentences = parseLibraryText($("sentenceInput").value);
       if (!sentences.length) return;
-      state.sentences = sentences;
-      state.index = 0;
-      $("sourceStatus").textContent = sentenceSourceLabel("粘贴内容", sentences);
-      resetCurrent(true);
+      const stamp = new Date().toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      if (await createLibrary({ name: `粘贴内容 ${stamp}`, source: "粘贴", items: sentences })) {
+        $("sentenceInput").value = "";
+        closeTopMenus();
+      }
     });
 
     $("saveTranslationBtn").addEventListener("click", saveCurrentTranslation);
     $("saveAiSettingsBtn").addEventListener("click", saveAiSettings);
     $("openLibraryBtn").addEventListener("click", openLibraryModal);
+    targetEl.addEventListener("click", (event) => {
+      if (event.target.closest("[data-open-library]")) openLibraryModal();
+    });
     $("closeLibraryBtn").addEventListener("click", closeLibraryModal);
     $("libraryModal").addEventListener("pointerdown", (event) => {
       if (event.target === $("libraryModal")) closeLibraryModal();
@@ -2702,7 +3021,20 @@ const fallbackSentences = [
       goToEnteredLibraryPage();
       $("libraryPageInput").select();
     });
-    $("useLibraryBtn").addEventListener("click", useCommonLibrary);
+    $("useLibraryBtn").addEventListener("click", () => useLibrary(state.library.selectedId));
+    $("renameLibraryBtn").addEventListener("click", () => renameLibrary(state.library.selectedId));
+    $("deleteLibraryBtn").addEventListener("click", () => deleteLibrary(state.library.selectedId));
+    $("libraryList").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-library-id]");
+      if (button) selectLibraryInModal(button.dataset.libraryId);
+    });
+    $("libraryImportBtn").addEventListener("click", () => $("libraryFileInput").click());
+    $("libraryFileInput").addEventListener("change", async (event) => {
+      const [file] = event.target.files;
+      event.target.value = "";
+      await importSentenceFile(file);
+    });
+    $("modeSelect").addEventListener("change", saveProgress);
     $("analyzeGrammarBtn").addEventListener("click", () => analyzeCurrentGrammar());
     $("analyzeGrammarBtn").addEventListener("contextmenu", openGrammarContextMenu);
     $("reanalyzeGrammarBtn").addEventListener("click", () => {
@@ -3044,15 +3376,12 @@ const fallbackSentences = [
       localStorage.removeItem("langLSRWCurrentUser");
     }
     updateUserBadge();
+    render();
     if (state.currentUser) {
-      loadUserHistory();
       $("loginScreen").classList.remove("active");
-      syncWithCloud();
+      loadUserData().then(() => syncWithCloud());
     } else {
       showLogin();
     }
-
-    tryLoadDefaultFile();
-    render();
 
 

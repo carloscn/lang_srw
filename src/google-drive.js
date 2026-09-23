@@ -1,16 +1,25 @@
-// Google sign-in + one JSON document in the user's Drive appDataFolder.
+// Google sign-in + the user's data in a visible "langLSRW" folder in their
+// Drive:
+//   langLSRW/langlsrw-data.json   history, settings, grammar cache, progress
+//   langLSRW/libraries/*.tsv      one file per sentence library
 // Pure browser code: Google Identity Services (token model) for OAuth, the
 // Drive v3 REST API for storage. No backend; the client ID is public config
-// read from <meta name="google-client-id">.
+// read from <meta name="google-client-id">. The drive.file scope only reaches
+// files this app created, so libraries must be imported through the app.
 (function () {
   const GIS_SRC = "https://accounts.google.com/gsi/client";
   const SCOPES = [
     "openid",
     "email",
     "profile",
-    "https://www.googleapis.com/auth/drive.appdata"
+    "https://www.googleapis.com/auth/drive.file"
   ].join(" ");
   const FILE_NAME = "langlsrw-data.json";
+  const ROOT_FOLDER = "langLSRW";
+  const LIBRARY_FOLDER = "libraries";
+  const FOLDER_MIME = "application/vnd.google-apps.folder";
+  const DRIVE = "https://www.googleapis.com/drive/v3/files";
+  const UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
   const PROFILE_KEY = "langLSRWGoogleProfile";
 
   let gisPromise = null;
@@ -19,6 +28,7 @@
   let accessToken = "";
   let tokenExpiresAt = 0;
   let fileId = "";
+  let folders = {};
 
   function clientId() {
     return document.querySelector('meta[name="google-client-id"]')?.content.trim() || "";
@@ -129,7 +139,10 @@
     await requestToken({ selectAccount });
     const info = await (await api("https://www.googleapis.com/oauth2/v3/userinfo")).json();
     const previous = getProfile();
-    if (previous?.sub !== info.sub) fileId = "";
+    if (previous?.sub !== info.sub) {
+      fileId = "";
+      folders = {};
+    }
     const profile = {
       sub: info.sub,
       email: info.email || "",
@@ -146,27 +159,124 @@
     accessToken = "";
     tokenExpiresAt = 0;
     fileId = "";
+    folders = {};
     localStorage.removeItem(PROFILE_KEY);
+  }
+
+  function quote(value) {
+    return `'${String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+  }
+
+  async function findChildren(parentId, extraQuery = "", fields = "files(id,name,modifiedTime,appProperties)") {
+    const files = [];
+    let pageToken = "";
+    do {
+      const query = new URLSearchParams({
+        q: `${quote(parentId)} in parents and trashed=false${extraQuery ? ` and ${extraQuery}` : ""}`,
+        fields: `nextPageToken,${fields}`,
+        orderBy: "modifiedTime desc",
+        pageSize: "1000",
+        spaces: "drive"
+      });
+      if (pageToken) query.set("pageToken", pageToken);
+      const page = await (await api(`${DRIVE}?${query}`)).json();
+      files.push(...(page.files || []));
+      pageToken = page.nextPageToken || "";
+    } while (pageToken);
+    return files;
+  }
+
+  // Folder ids are cached per session; the promise is cached so concurrent
+  // callers never create the folder twice.
+  function folder(name, parentId) {
+    const key = `${parentId}/${name}`;
+    if (!folders[key]) {
+      folders[key] = (async () => {
+        const [existing] = await findChildren(parentId, `name=${quote(name)} and mimeType=${quote(FOLDER_MIME)}`, "files(id)");
+        if (existing) return existing.id;
+        const created = await (await api(`${DRIVE}?fields=id`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] })
+        })).json();
+        return created.id;
+      })().catch((error) => {
+        delete folders[key];
+        throw error;
+      });
+    }
+    return folders[key];
+  }
+
+  const rootFolder = () => folder(ROOT_FOLDER, "root");
+  const libraryFolder = async () => folder(LIBRARY_FOLDER, await rootFolder());
+
+  function multipart(metadata, body, contentType) {
+    const boundary = `langlsrw-${Math.random().toString(36).slice(2)}`;
+    return {
+      contentType: `multipart/related; boundary=${boundary}`,
+      body: [
+        `--${boundary}`,
+        "Content-Type: application/json; charset=UTF-8",
+        "",
+        JSON.stringify(metadata),
+        `--${boundary}`,
+        `Content-Type: ${contentType}`,
+        "",
+        body,
+        `--${boundary}--`
+      ].join("\r\n")
+    };
+  }
+
+  // Drive only takes multipart uploads up to 5 MB; bigger bodies (a 100k-line
+  // library is ~9 MB) go through a resumable session: metadata first, then the
+  // content in one PUT to the session URL.
+  const MULTIPART_LIMIT = 4 * 1024 * 1024;
+
+  async function resumableUpload(id, metadata, body, contentType) {
+    const blob = new Blob([body], { type: contentType });
+    const session = await api(id ? `${UPLOAD}/${id}?uploadType=resumable` : `${UPLOAD}?uploadType=resumable`, {
+      method: id ? "PATCH" : "POST",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": contentType,
+        "X-Upload-Content-Length": String(blob.size)
+      },
+      body: JSON.stringify(metadata)
+    });
+    const location = session.headers.get("Location");
+    if (!location) throw new Error("Google Drive 没有返回上传地址。");
+    const saved = await (await api(location, { method: "PUT", headers: { "Content-Type": contentType }, body: blob })).json();
+    return saved.id;
+  }
+
+  // Create (no id) or overwrite (id) a file's metadata + content.
+  async function upload(id, metadata, body, contentType) {
+    if (new Blob([body]).size > MULTIPART_LIMIT) return resumableUpload(id, metadata, body, contentType);
+    const request = multipart(metadata, body, contentType);
+    const url = id
+      ? `${UPLOAD}/${id}?uploadType=multipart&fields=id`
+      : `${UPLOAD}?uploadType=multipart&fields=id`;
+    const saved = await (await api(url, {
+      method: id ? "PATCH" : "POST",
+      headers: { "Content-Type": request.contentType },
+      body: request.body
+    })).json();
+    return saved.id;
   }
 
   async function findFileId() {
     if (fileId) return fileId;
-    const query = new URLSearchParams({
-      spaces: "appDataFolder",
-      q: `name='${FILE_NAME}' and trashed=false`,
-      fields: "files(id,modifiedTime)",
-      orderBy: "modifiedTime desc",
-      pageSize: "1"
-    });
-    const { files } = await (await api(`https://www.googleapis.com/drive/v3/files?${query}`)).json();
-    fileId = files?.[0]?.id || "";
+    const [file] = await findChildren(await rootFolder(), `name=${quote(FILE_NAME)}`, "files(id)");
+    fileId = file?.id || "";
     return fileId;
   }
 
   async function pull() {
     const id = await findFileId();
     if (!id) return null;
-    const response = await api(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, { cache: "no-store" });
+    const response = await api(`${DRIVE}/${id}?alt=media`, { cache: "no-store" });
     try {
       return await response.json();
     } catch {
@@ -175,35 +285,49 @@
   }
 
   async function push(data) {
-    const body = JSON.stringify(data);
     const id = await findFileId();
-    if (id) {
-      await api(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body
-      });
-      return;
-    }
-    const boundary = `langlsrw-${Math.random().toString(36).slice(2)}`;
-    const metadata = { name: FILE_NAME, parents: ["appDataFolder"], mimeType: "application/json" };
-    const multipart = [
-      `--${boundary}`,
-      "Content-Type: application/json; charset=UTF-8",
-      "",
-      JSON.stringify(metadata),
-      `--${boundary}`,
-      "Content-Type: application/json",
-      "",
-      body,
-      `--${boundary}--`
-    ].join("\r\n");
-    const created = await (await api("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
-      method: "POST",
-      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-      body: multipart
-    })).json();
-    fileId = created.id || "";
+    const metadata = id
+      ? { mimeType: "application/json" }
+      : { name: FILE_NAME, parents: [await rootFolder()], mimeType: "application/json" };
+    fileId = await upload(id, metadata, JSON.stringify(data), "application/json");
+  }
+
+  async function listLibraries() {
+    const files = await findChildren(await libraryFolder());
+    return files.map((file) => ({
+      fileId: file.id,
+      libraryId: file.appProperties?.lsrwLibraryId || "",
+      name: String(file.name || "").replace(/\.tsv$/i, ""),
+      updatedAt: file.appProperties?.lsrwUpdatedAt || file.modifiedTime || ""
+    }));
+  }
+
+  async function downloadLibrary(id) {
+    return (await api(`${DRIVE}/${id}?alt=media`, { cache: "no-store" })).text();
+  }
+
+  // Returns the Drive file id. The library id and change time ride along as
+  // appProperties so a re-download needs no extra index file.
+  async function uploadLibrary(id, library, tsv) {
+    const metadata = {
+      name: `${library.name}.tsv`,
+      mimeType: "text/tab-separated-values",
+      appProperties: {
+        lsrwLibraryId: library.id,
+        lsrwUpdatedAt: library.updatedAt,
+        lsrwSource: String(library.source || "").slice(0, 100)
+      }
+    };
+    if (!id) metadata.parents = [await libraryFolder()];
+    return upload(id, metadata, tsv, "text/tab-separated-values; charset=UTF-8");
+  }
+
+  async function trashFile(id) {
+    await api(`${DRIVE}/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trashed: true })
+    });
   }
 
   window.langLSRWGoogleDrive = {
@@ -214,6 +338,10 @@
     reconnect: () => requestToken(),
     signOut,
     pull,
-    push
+    push,
+    listLibraries,
+    downloadLibrary,
+    uploadLibrary,
+    trashFile
   };
 })();
