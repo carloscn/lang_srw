@@ -33,8 +33,13 @@
       if (manifest.schemaVersion !== 1 || manifest.format !== "tsv" || !manifest.file) {
         throw new Error("当前网页不支持这个句库格式。");
       }
+      // The server caches data files as immutable, so the URL carries a content
+      // hash (stamped into the manifest by deploy/deploy.sh). Without one
+      // (local dev server) fall back to always refetching.
       const dataUrl = new URL(manifest.file, manifestResponse.url);
-      const dataResponse = await fetch(dataUrl, { cache: "no-store" });
+      const fileVersion = manifest.fileHash || "";
+      if (fileVersion) dataUrl.searchParams.set("v", fileVersion);
+      const dataResponse = await fetch(dataUrl, fileVersion ? {} : { cache: "no-store" });
       if (!dataResponse.ok) throw new Error(`无法读取句库内容（${dataResponse.status}）`);
       const items = parseTsv(await dataResponse.text(), manifest);
       return { manifest, items };
