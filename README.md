@@ -1,0 +1,79 @@
+# langLSRW
+
+个人本地优先的英语学习原型，围绕「听说读写」四个模块展开。目前「听」「说」可用于日常本地练习，「读」「写」尚未实现。纯前端页面，没有后端、鉴权或云同步，AI 语法分析是唯一联网功能，且需要手动触发。
+
+## 快速开始
+
+项目是静态页面，需要一个本地 HTTP 服务器（不能直接双击打开 `index.html`，否则句库等文件的 `fetch` 会被浏览器的同源策略拦截）。
+
+**Windows**
+
+```bat
+tools\start-langlsrw-server.bat
+```
+
+**Linux / Ubuntu**
+
+```bash
+tools/start-langlsrw-server.sh
+```
+
+两个脚本都会：从脚本自身位置推算出项目根目录、检查 8848 端口是否被占用（如果是遗留的 `python -m http.server` 会自动关闭，如果是其他程序会提示并退出）、然后用 `python3`（或 `python`）在该端口启动静态服务器。
+
+启动后打开浏览器访问：
+
+```
+http://localhost:8848/
+```
+
+## 功能概览
+
+- **听**：导入 `.txt` / `.lrc` 或粘贴句子列表，顺序/随机/错题练习模式，英式发音朗读、慢速回放、单词回放，听写打分（准确率/速度/流畅度）。
+- **说**：按住说话，语音识别 + 录音，音量条与相似度/漏词/错词/多词反馈，可回放录音并与原句对比。
+- **句库**：内置 `常用英语句库`（3万余条中英对照句），本地搜索、分页预览，一键加入听说练习。
+- **AI 语法分析**：手动触发，按句子缓存结果，避免重复计费；层级化 JSON 语法树渲染，可查看/复制原始 prompt 和 AI 返回内容。API Key 目前只存在浏览器本地存储，仅适合个人本地使用。
+- **通用设置**：多用户（本地存储、JSON 导入导出）、四套主题（黑/灰/浅色/护眼）、语法角色配色自定义、可配置快捷键。
+
+更详细的实现状态、架构和已知边界见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。
+
+## 项目结构
+
+```text
+langLSRW/
+  index.html
+  src/
+    app.js                 # 主逻辑（听说读写、设置、用户、语法渲染）
+    library.js             # 句库加载与缓存
+    styles.css
+    generated/grammar-prompt.js   # 生成产物，勿手改
+  assets/
+    materials/              # 默认听写材料、语法示例
+    libraries/common-english-30150/  # 内置句库（manifest.json + sentences.tsv）
+  tools/
+    start-langlsrw-server.bat
+    start-langlsrw-server.sh
+  .agents/skills/            # AI 语法分析的 Skill 定义（传统语法 / SIEG2）
+  deploy/                    # 部署到 vpsde（lang.mltz.tech）的脚本与说明
+```
+
+## 部署
+
+日常仍以本地测试为主。往 `vpsde` 这台 VPS 部署（域名 `lang.mltz.tech`）的脚本、nginx 配置和步骤说明都在 [deploy/README.md](deploy/README.md)，不含任何密钥/Token，需要单独的 SSH 别名配置。
+
+## AI 语法分析的 Skill 机制
+
+网页里实际生效的语法分析 prompt 来自 `.agents/skills/langlsrw-traditional-grammar-analysis/`，不要直接改 `src/generated/grammar-prompt.js`。改动流程是先改 Skill 里的 prompt 源文本，再跑：
+
+```bash
+node .agents/skills/langlsrw-traditional-grammar-analysis/scripts/build-web-prompt.js
+node .agents/skills/langlsrw-traditional-grammar-analysis/scripts/build-web-prompt.js --check
+```
+
+`langlsrw-sieg2-grammar-analysis` 是另一套并存的语法框架，目前在 UI 中禁用，不参与运行时。
+
+## 已知边界
+
+- 读、写页面未实现；没有复习池、AI 文章生成等能力。
+- 没有后端、鉴权、数据库或云同步；API Key 存在浏览器本地存储，只适合私人本地使用，公开前必须先接后端代理。
+- 语音识别与录音依赖浏览器支持和麦克风权限。
+- 仓库中存在 Sites 托管配置（`.openai/hosting.json`），但部署只能在项目所有者明确要求时进行。
