@@ -1,0 +1,10 @@
+西班牙语–中文句库（11,057 句）
+
+来源：Tatoeba（https://tatoeba.org），每周导出 2026-09-19：
+  per_language/spa/spa_sentences.tsv、per_language/cmn/cmn_sentences.tsv、
+  per_language/spa/spa-cmn_links.tsv
+许可：CC BY 2.0 FR（https://creativecommons.org/licenses/by/2.0/fr/），署名 tatoeba.org 及各句作者。
+
+生成方式：script/build_tatoeba_pairs.py … --simplified
+  同一西语句子的多个中文译文合并为「译文1 / 译文2」；中文用 OpenCC t2s 繁转简。
+格式：五位序号 ⇥ 西语 ⇥ 中文

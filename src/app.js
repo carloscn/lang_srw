@@ -177,6 +177,7 @@
         volumeSamples: 0,
         audioChunks: [],
         spokenText: "",
+        statusMessage: "",
         recordedAudioUrl: "",
         metrics: null
       }
@@ -661,6 +662,7 @@
           id: file.libraryId,
           name: file.name,
           source: existing?.source || "Google Drive",
+          language: file.language || existing?.language || "en",
           createdAt: existing?.createdAt || file.updatedAt,
           updatedAt: file.updatedAt,
           items: parseTsvLibrary(await googleDrive.downloadLibrary(file.fileId), { hasIdColumn: true }),
@@ -946,6 +948,54 @@
       renderLibraryPage();
     }
 
+    // ---- Learning languages ------------------------------------------------
+    // Each library has the language of its practice sentences; read-aloud,
+    // voices and speech recognition follow it. Translations are free-form.
+    const learningLanguages = {
+      en: { label: "英语", accents: [["en-GB", "英音"], ["en-US", "美音"]], words: ["the", "is", "you", "i", "to", "a", "and", "it", "of", "that", "what", "this", "are", "do"] },
+      es: { label: "西班牙语", accents: [["es-ES", "西班牙"], ["es-MX", "墨西哥"]], words: ["el", "la", "que", "de", "es", "no", "y", "en", "un", "una", "lo", "los", "por", "qué", "está"] },
+      fr: { label: "法语", accents: [["fr-FR", "法国"], ["fr-CA", "加拿大"]], words: ["le", "la", "les", "est", "je", "vous", "pas", "de", "et", "un", "une", "que", "il", "ce"] },
+      de: { label: "德语", accents: [["de-DE", "德国"]], words: ["der", "die", "das", "ist", "ich", "nicht", "und", "sie", "ein", "zu", "du", "es", "wir"] },
+      it: { label: "意大利语", accents: [["it-IT", "意大利"]], words: ["il", "è", "che", "di", "non", "un", "la", "sono", "ho", "per", "mi", "ti", "lo"] },
+      pt: { label: "葡萄牙语", accents: [["pt-BR", "巴西"], ["pt-PT", "葡萄牙"]], words: ["o", "a", "que", "não", "de", "é", "um", "eu", "você", "em", "se", "uma", "os"] }
+    };
+
+    function languageOf(library) {
+      return learningLanguages[library?.language] ? library.language : "en";
+    }
+
+    function activeLanguage() {
+      return languageOf(state.libraries.find((item) => item.id === state.activeLibraryId));
+    }
+
+    // Guess from function words in a sample; ties and unknowns fall back to English.
+    function detectLanguage(items) {
+      const scores = Object.fromEntries(Object.keys(learningLanguages).map((code) => [code, 0]));
+      const sets = Object.entries(learningLanguages).map(([code, info]) => [code, new Set(info.words)]);
+      items.slice(0, 400).forEach((item) => {
+        (String(item.text).toLowerCase().match(wordPattern()) || []).forEach((word) => {
+          sets.forEach(([code, words]) => {
+            if (words.has(word)) scores[code] += 1;
+          });
+        });
+      });
+      const [best, score] = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+      return score > scores.en ? best : "en";
+    }
+
+    // Accent choices depend on the active library's language; the chosen accent
+    // is remembered per language.
+    function renderAccentOptions() {
+      const language = activeLanguage();
+      const { accents } = learningLanguages[language];
+      const remembered = state.speechSettings.accents?.[language]
+        || (accents.some(([value]) => value === state.speechSettings.accent) ? state.speechSettings.accent : "");
+      const select = $("accentSelect");
+      select.innerHTML = accents.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+      select.value = accents.some(([value]) => value === remembered) ? remembered : accents[0][0];
+      select.title = `朗读与识别：${learningLanguages[language].label}`;
+    }
+
     // ---- Sentence libraries + training progress ---------------------------
     // Libraries live in IndexedDB per user (src/library-store.js). For a Google
     // user they mirror langLSRW/libraries/*.tsv in Drive; progress (active
@@ -1009,8 +1059,10 @@
       state.sentences = library ? normalizeSentenceList(library.items) : [];
       state.index = state.sentences.length ? Math.min(Math.max(0, Number(index) || 0), state.sentences.length - 1) : 0;
       $("sourceStatus").textContent = library
-        ? `当前句库：${library.name}（${libraryMeta(library)}）`
+        ? `当前句库：${library.name}（${learningLanguages[languageOf(library)].label} · ${libraryMeta(library)}）`
         : "还没有句库：打开「句库」导入。";
+      renderAccentOptions();
+      populateVoices();
     }
 
     // Put the practice view where the progress says (after login, reload or sync).
@@ -1054,6 +1106,7 @@
         id: libraryStore.newId(),
         name: String(name || "未命名句库").trim().slice(0, 80) || "未命名句库",
         source: source || "",
+        language: detectLanguage(items),
         createdAt: now,
         updatedAt: now,
         items: items.map((item, index) => ({
@@ -1076,6 +1129,18 @@
       await libraryStore.put(state.currentUser, { ...library, name: name.slice(0, 80), updatedAt: new Date().toISOString() });
       await reloadLibraries();
       if (state.activeLibraryId === id) showActiveLibrary(state.libraries.find((item) => item.id === id), state.index);
+      scheduleCloudSync(500);
+    }
+
+    async function setLibraryLanguage(id, language) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library || !learningLanguages[language] || languageOf(library) === language) return;
+      await libraryStore.put(state.currentUser, { ...library, language, updatedAt: new Date().toISOString() });
+      await reloadLibraries();
+      if (state.activeLibraryId === id) {
+        showActiveLibrary(state.libraries.find((item) => item.id === id), state.index);
+        resetCurrent();
+      }
       scheduleCloudSync(500);
     }
 
@@ -1142,6 +1207,7 @@
       const cloud = isGoogleUser() ? (selected.driveFileId ? " · 已存到 Google Drive" : " · 等待同步到 Google Drive") : " · 仅保存在本机";
       $("libraryMeta").textContent = `${libraryMeta(selected)}${selected.source ? ` · 来源 ${selected.source}` : ""}${cloud}`;
       $("useLibraryBtn").textContent = selected.id === state.activeLibraryId ? "继续练习" : "使用此句库";
+      $("libraryLanguageSelect").value = languageOf(selected);
       renderLibraryPage();
     }
 
@@ -1586,6 +1652,8 @@
     function saveSpeechSettings() {
       const settings = {
         accent: $("accentSelect").value,
+        accents: { ...(state.speechSettings.accents || {}), [activeLanguage()]: $("accentSelect").value },
+        ignoreAccents: $("ignoreAccentsToggle").checked,
         voiceURI: $("voiceSelect").value,
         autoSpeak: $("autoSpeakToggle").checked,
         speakWord: $("speakWordToggle").checked,
@@ -1981,7 +2049,8 @@
     }
 
     function loadSpeechSettings() {
-      $("accentSelect").value = state.speechSettings.accent || "en-GB";
+      renderAccentOptions();
+      $("ignoreAccentsToggle").checked = state.speechSettings.ignoreAccents !== false;
       $("autoSpeakToggle").checked = state.speechSettings.autoSpeak !== false;
       $("speakWordToggle").checked = state.speechSettings.speakWord !== false;
       $("showSourceToggle").checked = state.speechSettings.showSource !== false;
@@ -1993,7 +2062,8 @@
       state.voices = window.speechSynthesis.getVoices();
       const accent = $("accentSelect").value;
       const matchingVoices = state.voices.filter((voice) => voice.lang && voice.lang.toLowerCase().startsWith(accent.toLowerCase()));
-      const voices = matchingVoices.length ? matchingVoices : state.voices.filter((voice) => /^en-/i.test(voice.lang || ""));
+      const languagePrefix = new RegExp(`^${activeLanguage()}(-|_|$)`, "i");
+      const voices = matchingVoices.length ? matchingVoices : state.voices.filter((voice) => languagePrefix.test(voice.lang || ""));
       $("voiceSelect").innerHTML = '<option value="">自动选择</option>' + voices.map((voice) => (
         `<option value="${escapeHtml(voice.voiceURI)}">${escapeHtml(voice.name)} (${escapeHtml(voice.lang)})</option>`
       )).join("");
@@ -2012,16 +2082,48 @@
       if (voiceURI) return state.voices.find((voice) => voice.voiceURI === voiceURI) || null;
       return state.voices.find((voice) => voice.lang === accent)
         || state.voices.find((voice) => voice.lang && voice.lang.toLowerCase().startsWith(accent.toLowerCase()))
-        || state.voices.find((voice) => /^en-/i.test(voice.lang || ""))
+        || state.voices.find((voice) => new RegExp(`^${activeLanguage()}(-|_|$)`, "i").test(voice.lang || ""))
         || null;
+    }
+
+    // Read-aloud and recognition are browser features (Web Speech API), not
+    // server ones. Brave strips Google's online voices and recognition service,
+    // and Linux browsers other than Google Chrome usually have no voices at all.
+    const isBrave = Boolean(navigator.brave);
+    const browserAdvice = "请用 Google Chrome 或 Microsoft Edge 打开本网站";
+    const noticesShown = new Set();
+
+    function showNotice(message, key = message) {
+      if (noticesShown.has(key)) return;
+      noticesShown.add(key);
+      const notice = $("appNotice");
+      notice.textContent = message;
+      notice.hidden = false;
+      clearTimeout(showNotice.timer);
+      showNotice.timer = setTimeout(() => {
+        notice.hidden = true;
+      }, 9000);
+    }
+
+    function warnIfNoVoice() {
+      const voices = window.speechSynthesis.getVoices();
+      if (!voices.length) {
+        showNotice(`当前浏览器没有可用的朗读语音${isBrave ? "（Brave 不带 Google 在线语音）" : ""}，所以听不到声音。${browserAdvice}。`, "no-voices");
+        return;
+      }
+      const language = activeLanguage();
+      if (!voices.some((voice) => new RegExp(`^${language}(-|_|$)`, "i").test(voice.lang || ""))) {
+        showNotice(`当前浏览器没有${learningLanguages[language].label}语音，朗读可能听不懂。${browserAdvice}。`, `no-voice-${language}`);
+      }
     }
 
     function speakText(text, options = {}) {
       if (!("speechSynthesis" in window)) {
-        alert("当前浏览器不支持朗读功能。");
+        showNotice(`当前浏览器不支持朗读功能。${browserAdvice}。`, "no-tts");
         return;
       }
       if (!text) return;
+      warnIfNoVoice();
       if (options.interrupt !== false) window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = $("accentSelect").value;
@@ -2111,9 +2213,9 @@
 
     function getTargetWordEndingAt(position) {
       const target = currentSentence();
-      const wordPattern = /[A-Za-z]+(?:['’.-][A-Za-z]+)*/g;
+      const pattern = wordPattern();
       let match;
-      while ((match = wordPattern.exec(target)) !== null) {
+      while ((match = pattern.exec(target)) !== null) {
         const word = match[0];
         const end = match.index + word.length;
         if (end === position) {
@@ -2148,8 +2250,23 @@
       return char;
     }
 
+    // Words are letters/digits of any language (é, ñ, ü…), not just ASCII.
+    const wordPatternSource = "[\\p{L}\\p{N}]+(?:['’.-][\\p{L}\\p{N}]+)*";
+
+    function wordPattern() {
+      return new RegExp(wordPatternSource, "gu");
+    }
+
     function isCheckChar(char) {
-      return /[A-Za-z0-9]/.test(char || "");
+      return /[\p{L}\p{N}]/u.test(char || "");
+    }
+
+    // With "ignore accents" on (default), á→a, ñ→n, ü→u when comparing.
+    function foldChar(char) {
+      const lower = char.toLowerCase();
+      return state.speechSettings.ignoreAccents === false
+        ? lower
+        : lower.normalize("NFD").replace(/\p{M}+/gu, "");
     }
 
     function getCheckChars(text) {
@@ -2157,7 +2274,7 @@
       for (let i = 0; i < text.length; i += 1) {
         const char = text[i];
         if (isCheckChar(char)) {
-          chars.push({ char, normalized: char.toLowerCase(), pos: i + 1 });
+          chars.push({ char, normalized: foldChar(char), pos: i + 1 });
         }
       }
       return chars;
@@ -2169,9 +2286,9 @@
 
     function getWordMatches(text) {
       const words = [];
-      const wordPattern = /[A-Za-z0-9]+(?:['’.-][A-Za-z0-9]+)*/g;
+      const pattern = wordPattern();
       let match;
-      while ((match = wordPattern.exec(text)) !== null) {
+      while ((match = pattern.exec(text)) !== null) {
         const value = match[0];
         words.push({
           text: value,
@@ -2188,7 +2305,7 @@
       const targetWords = getWordMatches(target);
       const pairs = [];
       let targetIndex = 0;
-      const trailingWord = /[A-Za-z0-9'’.-]$/.test(input);
+      const trailingWord = /[\p{L}\p{N}'’.-]$/u.test(input);
 
       inputWords.forEach((inputWord, inputIndex) => {
         let foundIndex = -1;
@@ -2226,10 +2343,10 @@
 
     function getTargetWordPieces(target) {
       const pieces = [];
-      const wordPattern = /[A-Za-z0-9]+(?:['’.-][A-Za-z0-9]+)*/g;
+      const pattern = wordPattern();
       let lastIndex = 0;
       let match;
-      while ((match = wordPattern.exec(target)) !== null) {
+      while ((match = pattern.exec(target)) !== null) {
         if (match.index > lastIndex) {
           pieces.push({ type: "text", text: target.slice(lastIndex, match.index) });
         }
@@ -2337,14 +2454,18 @@
 
     function speakingCapabilityText() {
       const notes = [];
-      if (!speechRecognitionCtor()) notes.push("当前浏览器不支持自动识别，可先使用录音回放练习。");
+      if (!speechRecognitionCtor()) notes.push(`当前浏览器不支持自动识别，可先使用录音回放练习（${browserAdvice}）。`);
+      else if (isBrave) notes.push(`Brave 不提供语音识别服务，只能用录音回放（${browserAdvice}）。`);
       if (!navigator.mediaDevices || !window.MediaRecorder) notes.push("当前浏览器不支持录音回放。");
       return notes.join(" ");
     }
 
-    function setSpeakingStatus(message = "") {
+    // The message sticks until the next attempt; re-renders must not wipe an
+    // error the user has not seen yet.
+    function setSpeakingStatus(message = state.speaking.statusMessage) {
+      state.speaking.statusMessage = message || "";
       const capability = speakingCapabilityText();
-      $("speakingStatus").innerHTML = [message, capability].filter(Boolean).join(" ");
+      $("speakingStatus").innerHTML = [state.speaking.statusMessage, capability].filter(Boolean).join(" ");
     }
 
     function renderSpeakingPage() {
@@ -2396,6 +2517,7 @@
     }
 
     function resetSpeakingResult() {
+      state.speaking.statusMessage = "";
       state.speaking.spokenText = "";
       state.speaking.metrics = null;
       state.speaking.volumeLevel = 0;
@@ -2476,7 +2598,17 @@
       };
       recognition.onerror = (event) => {
         state.speaking.permissionLock = false;
-        setSpeakingStatus(`识别失败：${event.error || "未知错误"}`);
+        const reasons = {
+          network: `语音识别服务连不上。Brave、Chromium、Firefox 都不提供这个服务，${browserAdvice}；用 Chrome 时请检查网络`,
+          "not-allowed": "麦克风权限被拒绝，请点地址栏左侧的图标允许使用麦克风",
+          "service-not-allowed": `浏览器不允许使用语音识别服务，${browserAdvice}`,
+          "audio-capture": "找不到麦克风，请检查系统的输入设备",
+          "no-speech": "没有听到声音，请靠近麦克风再试",
+          "language-not-supported": `浏览器不支持${learningLanguages[activeLanguage()].label}识别`,
+          aborted: ""
+        };
+        const reason = reasons[event.error] ?? `未知错误（${event.error || "无代码"}）`;
+        if (reason) setSpeakingStatus(`识别失败：${escapeHtml(reason)}。`);
       };
       recognition.onend = () => {
         state.speaking.permissionLock = false;
@@ -2667,10 +2799,14 @@
       const target = currentSentence();
       const translation = currentTranslation();
       const hasGrammarCache = Boolean(currentGrammar());
+      const grammarSupported = activeLanguage() === "en";
+      $("analyzeGrammarBtn").disabled = !grammarSupported;
       $("analyzeGrammarBtn").classList.toggle("has-cache", hasGrammarCache);
-      $("analyzeGrammarBtn").title = hasGrammarCache
-        ? "当前句已有缓存：左键查看，右键重新分析"
-        : "左键分析当前句，右键重新分析";
+      $("analyzeGrammarBtn").title = !grammarSupported
+        ? "AI 语法分析目前只支持英语句子"
+        : hasGrammarCache
+          ? "当前句已有缓存：左键查看，右键重新分析"
+          : "左键分析当前句，右键重新分析";
       const showTranslation = $("showTranslationToggle").checked;
       const translationText = translation ? escapeHtml(translation) : "暂无翻译";
       const translationHtml = `<div class="translation-prompt ${showTranslation ? "" : "is-hidden"}">${showTranslation ? translationText : "&nbsp;"}</div>`;
@@ -3002,6 +3138,9 @@
     $("saveTranslationBtn").addEventListener("click", saveCurrentTranslation);
     $("saveAiSettingsBtn").addEventListener("click", saveAiSettings);
     $("openLibraryBtn").addEventListener("click", openLibraryModal);
+    $("appNotice").addEventListener("click", () => {
+      $("appNotice").hidden = true;
+    });
     targetEl.addEventListener("click", (event) => {
       if (event.target.closest("[data-open-library]")) openLibraryModal();
     });
@@ -3035,6 +3174,11 @@
       await importSentenceFile(file);
     });
     $("modeSelect").addEventListener("change", saveProgress);
+    $("libraryLanguageSelect").addEventListener("change", (event) => setLibraryLanguage(state.library.selectedId, event.target.value));
+    $("ignoreAccentsToggle").addEventListener("change", () => {
+      saveSpeechSettings();
+      render();
+    });
     $("analyzeGrammarBtn").addEventListener("click", () => analyzeCurrentGrammar());
     $("analyzeGrammarBtn").addEventListener("contextmenu", openGrammarContextMenu);
     $("reanalyzeGrammarBtn").addEventListener("click", () => {

@@ -12,7 +12,8 @@ def main():
         from opencc import OpenCC
     except ImportError:
         parser.exit(1, '请先安装依赖：python -m pip install opencc-python-reimplemented\n')
-    converter = OpenCC('tw2s')
+    # 用 t2s 而不是 tw2s：tw2s 按台湾用字处理，会把已经是简体的「么」（什么、怎么）转成「幺」。
+    converter = OpenCC('t2s')
     source = args.input
     target = source.with_name(source.stem + '_simplified' + source.suffix)
     lines = []

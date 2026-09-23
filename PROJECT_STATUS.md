@@ -29,6 +29,8 @@ Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on 
 - For a Google user each library is also a TSV file in `langLSRW/libraries/` in their Drive. Renaming or deleting the file in Drive is picked up on the next sync; deleting in the app moves the Drive file to the trash.
 - The former built-in `常用英语句库` (30,150 English-Chinese pairs) is kept in the repo at `data/libraries/common-english-30150/sentences.tsv` and can be imported like any other TSV; it is no longer deployed.
 - Search (English, Chinese, ID) and 50-row paginated preview run locally.
+- Each library has a learning language (en/es/fr/de/it/pt), guessed from function words on import and editable in the library dialog. Read-aloud accent, voice and speech recognition follow it; AI grammar analysis stays English-only. Dictation and speaking comparison accept letters of any script and ignore accents by default (á→a, ñ→n).
+- `data/libraries/spanish-chinese/` holds 11,057 Spanish–Chinese Tatoeba pairs built by `script/build_tatoeba_pairs.py` (OpenCC t2s; tw2s wrongly turns simplified 么 into 幺, which had also damaged 2,209 characters in the common library — repaired).
 
 ### Listening and dictation
 

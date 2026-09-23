@@ -2317,6 +2317,33 @@
       gap: 6px;
     }
 
+    .library-actions .library-language {
+      width: auto;
+      min-height: 34px;
+    }
+
+    .app-notice {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      z-index: 80;
+      width: min(560px, calc(100vw - 32px));
+      transform: translateX(-50%);
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--warn);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--ink);
+      padding: 10px 14px;
+      font-size: 14px;
+      line-height: 1.5;
+      box-shadow: var(--shadow-pop);
+    }
+
+    .app-notice[hidden] {
+      display: none;
+    }
+
     .empty-library {
       display: grid;
       justify-items: start;

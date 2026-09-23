@@ -298,6 +298,7 @@
       fileId: file.id,
       libraryId: file.appProperties?.lsrwLibraryId || "",
       name: String(file.name || "").replace(/\.tsv$/i, ""),
+      language: file.appProperties?.lsrwLanguage || "",
       updatedAt: file.appProperties?.lsrwUpdatedAt || file.modifiedTime || ""
     }));
   }
@@ -315,6 +316,7 @@
       appProperties: {
         lsrwLibraryId: library.id,
         lsrwUpdatedAt: library.updatedAt,
+        lsrwLanguage: library.language || "en",
         lsrwSource: String(library.source || "").slice(0, 100)
       }
     };

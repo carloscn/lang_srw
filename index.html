@@ -69,6 +69,8 @@
     </div>
   </section>
 
+  <div id="appNotice" class="app-notice" role="status" aria-live="polite" hidden></div>
+
   <section id="dropOverlay" class="drop-overlay" aria-hidden="true">
     <div class="drop-card">
       <strong>松开导入句库</strong>
@@ -165,6 +167,13 @@
               </select>
             </label>
             <button id="resetFontSettingsBtn" type="button">恢复默认字体</button>
+            <div class="settings-section">
+              <div class="settings-section-title">听写与口说</div>
+              <label class="check-row">
+                <input id="ignoreAccentsToggle" type="checkbox" checked>
+                <span>忽略重音符号（á→a、ñ→n、ü→u）</span>
+              </label>
+            </div>
             <div class="settings-section">
               <div class="settings-section-title">句子成分颜色</div>
               <div id="grammarColorGrid" class="grammar-color-grid">
@@ -399,6 +408,14 @@
               <div id="libraryMeta" class="small-note"></div>
             </div>
             <div class="library-actions">
+              <select id="libraryLanguageSelect" class="library-language" aria-label="学习语言" title="这个句库练习句子的语言：朗读、语音识别都会用它">
+                <option value="en">英语</option>
+                <option value="es">西班牙语</option>
+                <option value="fr">法语</option>
+                <option value="de">德语</option>
+                <option value="it">意大利语</option>
+                <option value="pt">葡萄牙语</option>
+              </select>
               <button id="renameLibraryBtn" type="button">重命名</button>
               <button id="deleteLibraryBtn" type="button">删除</button>
               <button id="useLibraryBtn" class="primary" type="button">使用此句库</button>
