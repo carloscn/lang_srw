@@ -32,12 +32,7 @@ const fallbackSentences = [
       togglePractice: "Alt+R"
     };
 
-    const themes = [
-      { id: "black", label: "黑夜" },
-      { id: "gray", label: "深灰" },
-      { id: "light", label: "白天" },
-      { id: "eye", label: "护眼" }
-    ];
+    const palettes = ["default", "github", "reddit", "twitter", "anki"];
 
     const englishFontPresets = {
       default: '"Segoe UI", Arial, sans-serif',
@@ -157,7 +152,6 @@ const fallbackSentences = [
       aiSettings: JSON.parse(localStorage.getItem("langLSRWAISettings") || "{}"),
       fontSettings: loadStoredFontSettings(),
       grammarColors: loadStoredGrammarColors(),
-      theme: localStorage.getItem("langLSRWTheme") || "black",
       activePage: loadActiveLearningPage(),
       grammarLoading: false,
       grammarVisible: false,
@@ -204,6 +198,29 @@ const fallbackSentences = [
     const counterEl = $("counter");
     const errorsEl = $("errors");
     const historyEl = $("history");
+
+    const googleDrive = window.langLSRWGoogleDrive;
+    const cloudSync = window.langLSRWCloudSync;
+    const googleUserPrefix = "google:";
+
+    function isGoogleUser(name = state.currentUser) {
+      return String(name || "").startsWith(googleUserPrefix);
+    }
+
+    function updateUserBadge() {
+      const profile = isGoogleUser() ? googleDrive.getProfile() : null;
+      $("userBadge").textContent = profile
+        ? `☁ ${profile.name}`
+        : state.currentUser ? `用户：${state.currentUser}` : "未登录";
+      $("cloudSyncPanel").hidden = !profile;
+      $("localUserActions").hidden = Boolean(profile);
+      if (profile) {
+        $("cloudName").textContent = profile.name;
+        $("cloudEmail").textContent = profile.email;
+        $("cloudAvatar").hidden = !profile.picture;
+        if (profile.picture) $("cloudAvatar").src = profile.picture;
+      }
+    }
 
     function normalizeUsername(name) {
       return name.trim().replace(/\s+/g, " ").slice(0, 24);
@@ -323,6 +340,11 @@ const fallbackSentences = [
         grammarRaw,
         savedAt: new Date().toISOString()
       });
+      storeGrammarCache(records);
+      scheduleCloudSync();
+    }
+
+    function storeGrammarCache(records) {
       let retained = records.slice(0, 500);
       while (retained.length) {
         try {
@@ -435,7 +457,7 @@ const fallbackSentences = [
         : 0;
       $("sourceStatus").textContent = `当前句库：备份数据（${state.sentences.length}句）`;
       loadUserHistory();
-      $("userBadge").textContent = state.currentUser ? `用户：${state.currentUser}` : "未登录";
+      updateUserBadge();
       resetCurrent();
       hideLogin();
       alert("数据已导入。");
@@ -455,6 +477,7 @@ const fallbackSentences = [
 
     function showLogin() {
       $("loginScreen").classList.add("active");
+      renderGoogleLogin();
       $("usernameInput").value = state.currentUser || "";
       renderLoginUsers();
       setTimeout(() => $("usernameInput").focus(), 0);
@@ -474,8 +497,158 @@ const fallbackSentences = [
       saveKnownUser(username);
       loadUserHistory();
       resetCurrent();
-      $("userBadge").textContent = `用户：${username}`;
+      updateUserBadge();
       hideLogin();
+    }
+
+    // ---- Google sign-in + Drive sync -------------------------------------
+    // A Google account is a user named "google:<sub>". Its history is cached
+    // in localStorage like a local user's and mirrored to one JSON file in the
+    // account's Drive appDataFolder (see src/google-drive.js, src/cloud-sync.js).
+    const settingsMetaKey = "langLSRWSettingsMeta";
+    const cloud = { running: null, timer: 0 };
+
+    function settingsValues(source) {
+      const values = {};
+      cloudSync.SETTINGS_KEYS.forEach((key) => {
+        values[key] = source[key] ?? null;
+      });
+      return values;
+    }
+
+    // Settings carry one "last changed" time; detect local edits by hashing.
+    function localSettingsSnapshot() {
+      const values = {};
+      cloudSync.SETTINGS_KEYS.forEach((key) => {
+        values[key] = localStorage.getItem(key);
+      });
+      const hash = JSON.stringify(values);
+      let meta = null;
+      try {
+        meta = JSON.parse(localStorage.getItem(settingsMetaKey) || "null");
+      } catch {}
+      if (!meta) meta = { hash, updatedAt: new Date(0).toISOString() };
+      else if (meta.hash !== hash) meta = { hash, updatedAt: new Date().toISOString() };
+      localStorage.setItem(settingsMetaKey, JSON.stringify(meta));
+      return { values, updatedAt: meta.updatedAt };
+    }
+
+    function applySyncedSettings(settings) {
+      const values = settingsValues(settings.values || {});
+      Object.entries(values).forEach(([key, value]) => {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      });
+      localStorage.setItem(settingsMetaKey, JSON.stringify({ hash: JSON.stringify(values), updatedAt: settings.updatedAt }));
+      state.shortcuts = loadShortcutSettings();
+      state.speechSettings = JSON.parse(localStorage.getItem("langLSRWSpeechSettings") || "{}");
+      loadSpeechSettings();
+      populateVoices();
+      renderShortcutSettings();
+      applyFontSettings(loadStoredFontSettings(), { persist: false });
+      applyGrammarColors(loadStoredGrammarColors(), { persist: false });
+    }
+
+    function setCloudStatus(kind, message) {
+      const el = $("cloudStatus");
+      el.dataset.status = kind;
+      el.textContent = message;
+    }
+
+    async function syncWithCloud({ interactive = false } = {}) {
+      if (!isGoogleUser()) return;
+      if (cloud.running) return cloud.running;
+      clearTimeout(cloud.timer);
+      const run = async () => {
+        try {
+          // GIS needs a user gesture to open its popup, so only a click reconnects.
+          if (!googleDrive.hasToken()) {
+            if (!interactive) {
+              setCloudStatus("offline", "未连接：点「立即同步」连接 Google Drive");
+              return;
+            }
+            await googleDrive.reconnect();
+          }
+          setCloudStatus("syncing", "正在同步…");
+          const remote = await googleDrive.pull();
+          const local = {
+            history: state.history,
+            grammarCache: loadGrammarCache(),
+            settings: localSettingsSnapshot()
+          };
+          const merged = cloudSync.merge(local, remote);
+
+          state.history = merged.history;
+          saveUserHistory();
+          renderHistory();
+          storeGrammarCache(merged.grammarCache);
+          if (merged.settings !== local.settings) applySyncedSettings(merged.settings);
+
+          if (!cloudSync.sameContent(merged, remote)) {
+            await googleDrive.push({ ...merged, updatedAt: new Date().toISOString() });
+          }
+          const time = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+          setCloudStatus("synced", `已同步 · ${time}`);
+        } catch (error) {
+          if (error.code === "token_expired") {
+            setCloudStatus("offline", "连接已过期：点「立即同步」重新连接");
+          } else {
+            setCloudStatus("error", `同步失败：${error.message}`);
+          }
+        }
+      };
+      // Clear the lock via .finally(): it always runs after this assignment,
+      // even when run() returns without awaiting anything.
+      cloud.running = run().finally(() => {
+        cloud.running = null;
+      });
+      return cloud.running;
+    }
+
+    function scheduleCloudSync(delay = 4000) {
+      if (!isGoogleUser() || !googleDrive.hasToken()) return;
+      clearTimeout(cloud.timer);
+      cloud.timer = setTimeout(() => syncWithCloud(), delay);
+    }
+
+    async function loginWithGoogle() {
+      const button = $("googleLoginBtn");
+      button.disabled = true;
+      try {
+        const profile = await googleDrive.signIn({ selectAccount: true });
+        const previousUser = state.currentUser;
+        const googleUser = `${googleUserPrefix}${profile.sub}`;
+        let guestHistory = [];
+        if (previousUser && !isGoogleUser(previousUser)) {
+          const history = JSON.parse(localStorage.getItem(userStorageKey(previousUser)) || "[]");
+          if (history.length && confirm(`把本机用户「${previousUser}」的 ${history.length} 条练习记录合并到 Google 账号（${profile.email}）吗？\n本机用户本身会保留。`)) {
+            guestHistory = history;
+          }
+        }
+        state.currentUser = googleUser;
+        localStorage.setItem("langLSRWCurrentUser", googleUser);
+        loadUserHistory();
+        if (guestHistory.length) {
+          state.history = cloudSync.mergeHistory(state.history, guestHistory);
+          saveUserHistory();
+        }
+        resetCurrent();
+        updateUserBadge();
+        hideLogin();
+        await syncWithCloud();
+      } catch (error) {
+        alert(error.message || "Google 登录失败。");
+      } finally {
+        button.disabled = !googleDrive.isConfigured();
+      }
+    }
+
+    function renderGoogleLogin() {
+      const configured = googleDrive.isConfigured();
+      $("googleLoginBtn").disabled = !configured;
+      $("googleLoginNote").textContent = configured
+        ? "练习记录、设置和 AI 语法缓存会同步到你自己的 Google Drive（隐藏的应用数据目录），换设备登录即可继续。"
+        : "Google 登录尚未配置（需要在 index.html 填写 OAuth Client ID，见 deploy/README.md）。";
     }
 
     function clearCurrentUser() {
@@ -484,7 +657,9 @@ const fallbackSentences = [
         showLogin();
         return;
       }
-      const confirmed = confirm(`确定清除用户「${username}」吗？这个用户的本机练习记录会被删除。`);
+      const confirmed = confirm(isGoogleUser(username)
+        ? "确定退出 Google 登录并清除本机缓存吗？Google Drive 里的云端数据不受影响。"
+        : `确定清除用户「${username}」吗？这个用户的本机练习记录会被删除。`);
       if (!confirmed) return;
 
       localStorage.removeItem(userStorageKey(username));
@@ -493,8 +668,9 @@ const fallbackSentences = [
       localStorage.removeItem("langLSRWCurrentUser");
       state.currentUser = "";
       state.history = [];
+      if (isGoogleUser(username)) googleDrive.signOut();
       resetSettingsToDefault();
-      $("userBadge").textContent = "未登录";
+      updateUserBadge();
       renderHistory();
       closeTopMenus();
       showLogin();
@@ -1166,20 +1342,34 @@ const fallbackSentences = [
       $("sourceStatus").textContent = "AI 设置已保存。";
     }
 
-    function applyTheme(theme) {
-      const themeMap = { dark: "black" };
-      const nextTheme = themeMap[theme] || theme;
-      state.theme = themes.some((item) => item.id === nextTheme) ? nextTheme : "black";
-      document.body.dataset.theme = state.theme;
-      const current = themes.find((item) => item.id === state.theme);
-      $("themeToggleBtn").textContent = current.label;
-      $("themeToggleBtn").title = `背景：${current.label}`;
-      localStorage.setItem("langLSRWTheme", state.theme);
+    // Theme model mirrors nav.mltz.tech. The initial light/dark value is set by
+    // the inline script in index.html (stored choice, else the OS setting);
+    // only an explicit click persists it, so an unset choice keeps following the OS.
+    function systemColorMode() {
+      return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+
+    function currentColorMode() {
+      return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    }
+
+    function applyColorMode(mode, { persist = false } = {}) {
+      const next = mode === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      if (persist) localStorage.setItem("langLSRWColorMode", next);
+      $("themeToggleBtn").textContent = next === "dark" ? "浅色" : "深色";
+      $("themeToggleBtn").title = next === "dark" ? "切换到浅色" : "切换到深色";
     }
 
     function toggleTheme() {
-      const currentIndex = Math.max(0, themes.findIndex((item) => item.id === state.theme));
-      applyTheme(themes[(currentIndex + 1) % themes.length].id);
+      applyColorMode(currentColorMode() === "dark" ? "light" : "dark", { persist: true });
+    }
+
+    function applyPalette(name) {
+      const next = palettes.includes(name) ? name : "default";
+      document.documentElement.dataset.palette = next;
+      localStorage.setItem("langLSRWPalette", next);
+      if ($("paletteSelect").value !== next) $("paletteSelect").value = next;
     }
 
     function applyFontSettings(settings, { persist = true } = {}) {
@@ -1269,13 +1459,15 @@ const fallbackSentences = [
 
     function resetSettingsToDefault() {
       localStorage.removeItem("langLSRWTheme");
+      localStorage.removeItem("langLSRWColorMode");
       localStorage.removeItem("langLSRWShortcuts");
       localStorage.removeItem("langLSRWSpeechSettings");
       localStorage.removeItem("langLSRWFontSettings");
       localStorage.removeItem("langLSRWGrammarColors");
       state.shortcuts = { ...defaultShortcuts };
       state.speechSettings = {};
-      applyTheme("black");
+      applyColorMode(systemColorMode());
+      applyPalette("default");
       applyFontSettings(fontDefaults(), { persist: false });
       applyGrammarColors(grammarColorDefaults(), { persist: false });
       loadSpeechSettings();
@@ -2421,6 +2613,7 @@ const fallbackSentences = [
       state.history.unshift(record);
       state.history = state.history.slice(0, 80);
       saveUserHistory();
+      scheduleCloudSync();
       state.index = pickNextIndex();
       resetCurrent(true);
     }
@@ -2672,6 +2865,7 @@ const fallbackSentences = [
     });
 
     $("themeToggleBtn").addEventListener("click", toggleTheme);
+    $("paletteSelect").addEventListener("change", (event) => applyPalette(event.target.value));
     $("englishFontSelect").addEventListener("change", saveFontSettings);
     $("chineseFontSelect").addEventListener("change", saveFontSettings);
     $("resetFontSettingsBtn").addEventListener("click", resetFontSettings);
@@ -2751,6 +2945,15 @@ const fallbackSentences = [
       showLogin();
     });
 
+    $("googleLoginBtn").addEventListener("click", loginWithGoogle);
+    $("cloudSyncBtn").addEventListener("click", () => syncWithCloud({ interactive: true }));
+    $("cloudSwitchUserBtn").addEventListener("click", () => showLogin());
+    $("googleLogoutBtn").addEventListener("click", clearCurrentUser);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden" && cloud.timer) syncWithCloud();
+    });
+    setInterval(() => scheduleCloudSync(0), 5 * 60 * 1000);
+
     document.querySelectorAll(".source-menu, .shortcut-menu, .font-menu, .user-menu").forEach((menu) => {
       menu.addEventListener("toggle", () => {
         if (menu.open) {
@@ -2821,7 +3024,9 @@ const fallbackSentences = [
     window.addEventListener("keydown", handleGlobalShortcut, { capture: true });
     window.addEventListener("keyup", handleGlobalShortcutKeyup, { capture: true });
 
-    applyTheme(state.theme);
+    localStorage.removeItem("langLSRWTheme");
+    applyColorMode(currentColorMode());
+    applyPalette(document.documentElement.dataset.palette);
     applyFontSettings(state.fontSettings, { persist: false });
     applyGrammarColors(state.grammarColors, { persist: false });
     setActivePage(state.activePage);
@@ -2834,12 +3039,16 @@ const fallbackSentences = [
       window.speechSynthesis.onvoiceschanged = populateVoices;
     }
 
+    if (isGoogleUser() && !googleDrive.getProfile()) {
+      state.currentUser = "";
+      localStorage.removeItem("langLSRWCurrentUser");
+    }
+    updateUserBadge();
     if (state.currentUser) {
       loadUserHistory();
-      $("userBadge").textContent = `用户：${state.currentUser}`;
       $("loginScreen").classList.remove("active");
+      syncWithCloud();
     } else {
-      $("userBadge").textContent = "未登录";
       showLogin();
     }
 

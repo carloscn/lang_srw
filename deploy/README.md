@@ -12,7 +12,7 @@ if you don't have it.
 
 | Path | What |
 |---|---|
-| `deploy.sh` | rsyncs `index.html`, `src/`, `assets/` to `vpsde:/home/carlos/langlsrw/public/`. Dev-only files (`tools/`, `.agents/`, docs, `.git`, `.openai`) are excluded — the server only needs what the browser fetches. |
+| `deploy.sh` | rsyncs `index.html`, `src/`, `assets/` to `vpsde:/home/carlos/langlsrw/public/` using an **allowlist** — everything else (`script/`, `tools/`, `.agents/`, `.claude/worktrees/`, docs, `.git`) is never uploaded, and anything already on the server outside the allowlist is removed. |
 | `nginx-lang-mltz.conf` | The nginx server block for `lang.mltz.tech`. Mirrors the pattern already used on this box for other `*.mltz.tech` subdomains (shared Cloudflare Origin Certificate, no new cert needed). |
 
 Real paths on vpsde (not in this repo, live only on the box):
@@ -46,8 +46,19 @@ Real paths on vpsde (not in this repo, live only on the box):
 
 ## Redeploying content
 
-Only step 2 above — just run `./deploy.sh` again. No sudo, no nginx changes needed
-for ordinary content updates.
+Only step 2 above — just run `deploy/deploy.sh` again (`--dry-run` to preview). No sudo,
+no nginx changes needed for ordinary content updates.
+
+**No manual cache-busting.** nginx serves js/css/tsv as `immutable` for 30 days, so
+every URL must change when its content does. `deploy.sh` handles this on a staged copy
+(the working tree is untouched): each `?v=...` in `index.html` becomes a hash of that
+file, and each library `manifest.json` gets a `fileHash` that `src/library.js` appends
+to the data URL. `index.html` and manifests are served `no-cache`, so a deploy is
+visible on the next page load. The `?v=` values in the repo's `index.html` only
+matter for the local dev server.
+
+`LANGLSRW_DEPLOY_TARGET=/some/local/dir/ deploy/deploy.sh` stages into a local
+directory instead of vpsde — handy for checking the output.
 
 ## Gotchas (carried over from this box's other static-site deploys)
 
@@ -71,3 +82,29 @@ for ordinary content updates.
    retry with these flags rather than waiting it out.
 5. **No sudo password for vpsde is stored anywhere in this repo.** Step 3 above needs
    it — hand the commands to the owner or whoever holds it, don't try to guess around it.
+
+## Google sign-in (one-time setup, done by the owner)
+
+Google sign-in is pure front-end: Google Identity Services issues a short-lived access
+token in the browser, and each user's data lives in **their own** Google Drive
+`appDataFolder` (a hidden per-app folder — you cannot see other users' data, and nothing
+is stored on vpsde). Until a client ID is configured the button is shown disabled and
+local (guest) users work as before.
+
+1. <https://console.cloud.google.com/> → create a project (e.g. `langLSRW`).
+2. APIs & Services → Library → enable **Google Drive API**.
+3. Google Auth Platform → configure the consent screen: user type **External**, app name
+   `langLSRW`, support email. Under *Data access* add the scopes `openid`, `email`,
+   `profile` and `https://www.googleapis.com/auth/drive.appdata`.
+4. *Audience*: leave the app in **Testing** and add every Google account that should be
+   able to sign in as a test user (max 100). Opening it to anyone means publishing the
+   app, which may require Google's verification.
+5. *Clients* → Create client → **Web application**. Authorized JavaScript origins:
+   `https://lang.mltz.tech` and `http://localhost:8848`. No redirect URIs needed.
+6. Paste the client ID (`….apps.googleusercontent.com`) into
+   `<meta name="google-client-id" content="">` in `index.html`, commit, deploy.
+   The client ID is public by design; there is no client secret in this flow.
+
+Notes: access tokens last ~1 hour and Google only issues a new one from a click (it opens
+a popup), so after that the user menu shows 「未连接」 and 「立即同步」 reconnects. Users
+can revoke access at <https://myaccount.google.com/permissions>.

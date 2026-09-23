@@ -4,18 +4,55 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>langLSRW</title>
-  <link rel="stylesheet" href="src/styles.css?v=20260923-6">
+  <!-- OAuth 2.0 Web client ID from Google Cloud Console (public, not a secret).
+       Empty = Google sign-in disabled. Setup: deploy/README.md "Google sign-in". -->
+  <meta name="google-client-id" content="180213407454-r5uujgmro3f0o8opcens160nkrn3s85q.apps.googleusercontent.com">
+  <script>
+    // Same theme model as nav.mltz.tech: light/dark follows the OS until the
+    // user clicks the toggle; palette is independent. Runs before paint.
+    (function () {
+      var t = null, p = null;
+      try { t = localStorage.getItem("langLSRWColorMode"); } catch (e) {}
+      if (t !== "light" && t !== "dark") {
+        try {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (e) {
+          t = "light";
+        }
+      }
+      try { p = localStorage.getItem("langLSRWPalette"); } catch (e) {}
+      if (!{ default: 1, github: 1, reddit: 1, twitter: 1, anki: 1 }[p]) p = "default";
+      document.documentElement.setAttribute("data-theme", t);
+      document.documentElement.setAttribute("data-palette", p);
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@600;700&display=swap">
+  <link rel="stylesheet" href="src/styles.css?v=20260923-9">
 
 </head>
-<body data-theme="black" data-active-page="listenPage">
+<body data-active-page="listenPage">
   <section id="loginScreen" class="login-screen active" aria-label="登录">
     <div class="login-card">
       <h1>进入练习</h1>
-      <p>创建新用户，或导入已有用户，开始听说读写练习。</p>
+      <p>用 Google 账号登录，练习记录跨设备同步；也可以用本机用户直接开始。</p>
+      <div class="google-login">
+        <button id="googleLoginBtn" class="google-login-btn" type="button">
+          <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          <span>使用 Google 登录</span>
+        </button>
+        <div id="googleLoginNote" class="small-note"></div>
+      </div>
+      <div class="login-divider"><span>或使用本机用户（游客模式）</span></div>
       <ul class="login-tips">
         <li>用户名是唯一的，区分大小写。</li>
-        <li>输入已有用户名，会载入当前浏览器中的该用户记录。</li>
-        <li>换浏览器、换打开地址或换电脑前，请先导出数据，再通过导入用户恢复。</li>
+        <li>本机用户的记录只保存在当前浏览器；换设备前请先导出数据，或改用 Google 登录。</li>
       </ul>
       <form id="loginForm" class="login-form">
         <label>
@@ -97,7 +134,14 @@
         </details>
       </div>
       <div class="toolbar">
-        <button id="themeToggleBtn" class="theme-toggle" type="button" aria-label="切换背景模式">黑夜</button>
+        <select id="paletteSelect" class="palette-select" title="切换色系" aria-label="色系">
+          <option value="default">默认绿</option>
+          <option value="github">GitHub</option>
+          <option value="reddit">Reddit</option>
+          <option value="twitter">Twitter</option>
+          <option value="anki">Anki</option>
+        </select>
+        <button id="themeToggleBtn" class="theme-toggle" type="button" aria-label="切换浅色/深色">深色</button>
         <details class="font-menu">
           <summary>设置</summary>
           <div class="font-popover settings">
@@ -157,13 +201,30 @@
         <details class="user-menu">
           <summary id="userBadge">未登录</summary>
           <div class="user-popover settings">
-            <button id="switchUserBtn" type="button">切换用户</button>
+            <div id="cloudSyncPanel" class="cloud-sync-panel" hidden>
+              <div class="cloud-account">
+                <img id="cloudAvatar" alt="" referrerpolicy="no-referrer" hidden>
+                <div>
+                  <strong id="cloudName"></strong>
+                  <span id="cloudEmail"></span>
+                </div>
+              </div>
+              <div id="cloudStatus" class="cloud-status" data-status="offline" aria-live="polite"></div>
+              <button id="cloudSyncBtn" class="primary" type="button">立即同步</button>
+              <div class="button-row">
+                <button id="cloudSwitchUserBtn" type="button">切换用户</button>
+                <button id="googleLogoutBtn" type="button">退出 Google</button>
+              </div>
+            </div>
+            <div id="localUserActions" class="settings">
+              <button id="switchUserBtn" type="button">切换用户</button>
+              <button id="clearUserBtn" type="button">清除用户</button>
+            </div>
             <div class="button-row">
               <button id="exportDataBtn" type="button">导出数据</button>
               <button id="importDataBtn" type="button">导入数据</button>
             </div>
             <button id="resetSettingsBtn" type="button">重置设置</button>
-            <button id="clearUserBtn" type="button">清除用户</button>
             <input id="dataImportInput" type="file" accept=".json,application/json" hidden>
             <div class="small-note">备份会包含当前用户和练习记录。</div>
           </div>
@@ -369,8 +430,10 @@
     <button id="copyAiContextBtn" type="button" role="menuitem">复制</button>
   </div>
   <script src="src/generated/grammar-prompt.js?v=20260921-10"></script>
-  <script src="src/library.js?v=20260923-1"></script>
-  <script src="src/app.js?v=20260923-2"></script>
+  <script src="src/library.js?v=20260923-2"></script>
+  <script src="src/cloud-sync.js?v=20260923-1"></script>
+  <script src="src/google-drive.js?v=20260923-1"></script>
+  <script src="src/app.js?v=20260923-5"></script>
 </body>
 </html>
 

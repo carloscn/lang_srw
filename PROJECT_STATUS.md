@@ -14,7 +14,8 @@ Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on 
 
 - Four-part navigation: `听说 -> 读 -> 写`; reading and writing currently remain placeholders.
 - Local users, browser storage, user switching, JSON import/export, and settings reset.
-- Four themes: black, gray, light, and eye-care.
+- Google sign-in (Google Identity Services token model, no backend). A Google user's practice history, settings and AI grammar cache sync to one JSON file in that user's Drive `appDataFolder`; merge rules live in `src/cloud-sync.js` (tested in `tests/cloud-sync.test.js`). Local users remain as guest mode, and a guest's history can be merged into a Google account on first sign-in. Needs an OAuth client ID in `index.html` (setup in `deploy/README.md`).
+- Visual style mirrors nav.mltz.tech: same design tokens, light/dark mode that follows the OS until toggled, and the same four palettes (default green, GitHub, Reddit, Twitter), plus an extra Anki palette modeled on apps.ankiweb.net (blue accent, pill controls, borderless shadowed cards, Hanken Grotesk).
 - Separate English-content and Chinese UI/translation font settings.
 - Configurable colors for all grammar roles, with a color picker, editable HEX value, common color palette, local persistence, and reset defaults.
 - Top popovers for shortcuts, source files, settings, and users. Learning shortcuts are suspended while any of these popovers is open.
@@ -87,7 +88,7 @@ The HTML, CSS, bundled material, generated prompt, and launcher are separated. M
 - Reading and writing pages are not implemented yet.
 - AI article generation, writing review, and review-material generation are not implemented yet.
 - Only the common sentence library is currently available; the other library categories have no data yet.
-- There is no backend, authentication service, database, or cloud sync.
+- There is no backend or database. Cloud sync exists only for Google users, via their own Drive; the API key and light/dark/palette choice stay per-device.
 - The API key is stored in browser local storage and is acceptable only for private local use.
 - Before public AI access, requests must move behind a backend proxy with quotas and cost controls.
 - Speech recognition and recording depend on browser support and microphone permission.
@@ -100,7 +101,7 @@ Verified on 2026-09-23:
 - `node --check src/app.js` passes.
 - Traditional grammar Skill/runtime prompt synchronization test passes: 1/1.
 - SIEG2 Skill validation and cache behavior tests pass: 13/13.
-- Common grammar colors render correctly in black and gray themes.
+- Light/dark mode and palette switching verified in the browser; no horizontal overflow at desktop or 375px widths.
 - HEX input and common-palette selection update only the selected grammar role.
 - Opening a top popover disables learning shortcuts; closing it restores them.
 - The common library manifest count matches the 30,150 valid TSV records.
