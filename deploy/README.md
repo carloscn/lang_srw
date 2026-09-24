@@ -46,11 +46,21 @@ Real paths on vpsde (not in this repo, live only on the box):
 
 ## Automatic deployment (GitHub Actions)
 
-Every push to `master` runs [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml):
-unit tests, syntax checks and the grammar-prompt check first, then — only if they pass —
-`deploy/deploy.sh` to vpsde, then a check that `https://lang.mltz.tech/` references the
-new `src/app.js?v=<hash>`. Pull requests run the tests only. Runs are listed under the
-repository's **Actions** tab; a manual run is available via *Run workflow*.
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) runs the unit tests,
+syntax checks and the grammar-prompt check on every push to `master` and every pull
+request. It **deploys only when a GitHub Release is published**: the release's tag is
+checked out, tested, synced to vpsde with `deploy/deploy.sh`, and then checked live
+(`https://lang.mltz.tech/` must reference that build's `src/app.js?v=<hash>`).
+
+To ship:
+
+```bash
+gh release create v1.2.0 --generate-notes      # or GitHub → Releases → Draft a new release
+```
+
+Emergency/manual deploy: Actions → *Test and deploy* → *Run workflow* on `master` or a
+tag. Deployments never overlap (one `production` concurrency group). Runs are listed
+under the repository's **Actions** tab.
 
 How the runner reaches vpsde:
 
@@ -68,7 +78,7 @@ Nginx config changes are **not** automated — they still need sudo (step 3 abov
 
 ## Redeploying content by hand
 
-Normally not needed (pushing to `master` deploys). Otherwise: step 2 above — run `deploy/deploy.sh` again (`--dry-run` to preview). No sudo,
+Normally not needed (publish a Release instead). Otherwise: step 2 above — run `deploy/deploy.sh` again (`--dry-run` to preview). No sudo,
 no nginx changes needed for ordinary content updates.
 
 **No manual cache-busting.** nginx serves js/css/tsv as `immutable` for 30 days, so

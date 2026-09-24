@@ -1,6 +1,7 @@
-# Test every push and pull request; deploy master to lang.mltz.tech when the
-# tests pass. Deployment runs deploy/deploy.sh (allowlisted rsync of
-# index.html + src/, content-hashed asset URLs).
+# Test every push and pull request. Deploy to lang.mltz.tech only when a
+# GitHub Release is published (the release's tag is what goes live), or by
+# hand via "Run workflow" on master or a tag. Deployment runs deploy/deploy.sh
+# (allowlisted rsync of index.html + src/, content-hashed asset URLs).
 #
 # Secrets (Settings → Secrets and variables → Actions):
 #   DEPLOY_SSH_KEY      private key whose public half is in vpsde's
@@ -16,6 +17,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -44,8 +47,15 @@ jobs:
 
   deploy:
     needs: test
-    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/')))
     runs-on: ubuntu-latest
+    # One deployment at a time, whatever triggered it.
+    concurrency:
+      group: production
+      cancel-in-progress: false
     environment:
       name: production
       url: https://lang.mltz.tech

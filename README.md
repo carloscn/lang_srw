@@ -136,7 +136,7 @@ node .agents/skills/langlsrw-traditional-grammar-analysis/scripts/build-web-prom
 
 ## Deployment
 
-Every push to `master` is tested and, if the tests pass, deployed automatically by [GitHub Actions](.github/workflows/deploy.yml). The workflow runs [`deploy/deploy.sh`](deploy/deploy.sh), which syncs only `index.html` and `src/` to the server through an allowlist. It content-hashes every asset URL so browsers never keep stale code. The nginx configuration and one-time setup are documented in [`deploy/README.md`](deploy/README.md).
+Every push is tested by [GitHub Actions](.github/workflows/deploy.yml); publishing a GitHub Release deploys that release to production once its tests pass. The workflow runs [`deploy/deploy.sh`](deploy/deploy.sh), which syncs only `index.html` and `src/` to the server through an allowlist. It content-hashes every asset URL so browsers never keep stale code. The nginx configuration and one-time setup are documented in [`deploy/README.md`](deploy/README.md).
 
 ## Roadmap
 

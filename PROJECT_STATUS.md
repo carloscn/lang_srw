@@ -6,7 +6,7 @@ Last updated: 2026-09-23
 
 langLSRW is currently a personal, local-first language-learning prototype. The listening and speaking workflow is usable for daily local testing. Reading, writing, review pools, article generation, and cloud data are still future work.
 
-Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on Windows or `tools/start-langlsrw-server.sh` on Linux/Ubuntu, then open `http://localhost:8848/`. Production is `lang.mltz.tech` on the `vpsde` VPS: every push to `master` is tested and deployed by GitHub Actions (`.github/workflows/deploy.yml`, details in `deploy/README.md`).
+Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on Windows or `tools/start-langlsrw-server.sh` on Linux/Ubuntu, then open `http://localhost:8848/`. Production is `lang.mltz.tech` on the `vpsde` VPS: every push is tested by GitHub Actions, and publishing a GitHub Release deploys it (`.github/workflows/deploy.yml`, details in `deploy/README.md`).
 
 ## Implemented
 
