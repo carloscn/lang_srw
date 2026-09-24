@@ -33,7 +33,7 @@ The user interface is currently in Simplified Chinese; button names below are tr
 
 **AI grammar analysis** (English)
 - On-demand, hierarchical grammar breakdown of the current sentence, cached per sentence to avoid repeat costs.
-- Uses your own OpenAI-compatible API key, which is stored only in your browser.
+- Uses your own OpenAI-compatible endpoint and API key, configured under **AI settings**.
 
 **Interface**
 - Light and dark modes that follow the system, with five colour palettes: default, GitHub, Reddit, Twitter, and Anki.
@@ -65,6 +65,17 @@ Two ready-made libraries live in [`data/libraries/`](data/libraries/) and can be
 
 - `common-english-30150`: 30,150 English–Chinese sentence pairs.
 - `spanish-chinese`: 11,057 Spanish–Chinese pairs from [Tatoeba](https://tatoeba.org), built with [`script/build_tatoeba_pairs.py`](script/build_tatoeba_pairs.py).
+
+## Security of your API key
+
+The AI key never leaves your browser except in requests to the endpoint you configured.
+
+- **Encrypted at rest.** The key is encrypted with AES-GCM (WebCrypto) under a non-extractable key that is generated in, and never leaves, the browser. You can optionally add an unlock password (PBKDF2-SHA256, 600,000 iterations) that is asked once per tab, or keep the key in memory only for the current page.
+- **Bound to its endpoint and user.** Each ciphertext is tied to the user and the API origin. Changing the endpoint's host discards the saved key, so it is never sent to a new server. Only `https://` endpoints are accepted (plain `http` only for `localhost`).
+- **Never displayed, exported or synced.** After saving, only a hint such as `sk-…a1b2` is shown. The key is excluded from JSON backups and Google Drive sync, and it is stored per user.
+- **Content-Security-Policy.** Only this site's and Google's scripts may run: no inline scripts other than one hashed bootstrap, and no `eval`. This is the main defence against injected script, which could otherwise use the key while it is unlocked.
+
+For the best protection, create a dedicated key for langLSRW with a monthly spending limit at your AI provider.
 
 ## Browser support
 
@@ -108,6 +119,7 @@ src/
   app.js                    UI, practice flows, settings, sync orchestration
   library-import.js         Import parsing, de-duplication, Sheets rows (pure, tested)
   library-store.js          Per-user library storage in IndexedDB
+  secret-store.js           API-key encryption and endpoint checks (pure, tested)
   google-drive.js           Google sign-in, Drive files, Picker, Sheets API
   cloud-sync.js             Merge rules for synced data (pure, tested)
   styles.css                Design tokens, themes and palettes
@@ -123,7 +135,7 @@ deploy/                     Deployment script, nginx config, setup guide
 ## Development
 
 ```bash
-node --test tests/*.test.js           # unit tests: import parsing, merging, sync rules
+node --test tests/*.test.js           # unit tests: import, merging, sync, key encryption, CSP
 node --check src/app.js               # syntax check
 ```
 

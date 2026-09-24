@@ -273,7 +273,7 @@
       --shadow-pop: 0 20px 48px -12px rgba(0, 0, 0, 0.8);
     }
     html[data-palette="anki"] :is(button:not(.grammar-node-content), .palette-select, .user-badge, .page-nav, .page-tab,
-      .source-menu summary, .font-menu summary, .user-menu summary, .shortcut-menu summary) {
+      .source-menu summary, .ai-menu summary, .font-menu summary, .user-menu summary, .shortcut-menu summary) {
       border-radius: 999px;
     }
     html[data-palette="anki"] .brand {
@@ -771,6 +771,7 @@
     }
 
     .source-menu,
+    .ai-menu,
     .font-menu,
     .user-menu,
     .shortcut-menu {
@@ -778,6 +779,7 @@
     }
 
     .source-menu summary,
+    .ai-menu summary,
     .font-menu summary,
     .user-menu summary,
     .shortcut-menu summary {
@@ -796,10 +798,12 @@
     }
 
     .source-menu[open] summary,
+    .ai-menu[open] summary,
     .font-menu[open] summary,
     .shortcut-menu[open] summary,
     .user-menu[open] summary,
     .source-menu summary:hover,
+    .ai-menu summary:hover,
     .font-menu summary:hover,
     .shortcut-menu summary:hover,
     .user-menu summary:hover {
@@ -809,6 +813,7 @@
     }
 
     .source-menu summary::-webkit-details-marker,
+    .ai-menu summary::-webkit-details-marker,
     .font-menu summary::-webkit-details-marker,
     .user-menu summary::-webkit-details-marker,
     .shortcut-menu summary::-webkit-details-marker {
@@ -816,6 +821,7 @@
     }
 
     .source-popover,
+    .ai-popover,
     .font-popover,
     .user-popover,
     .shortcut-popover {
@@ -844,6 +850,63 @@
 
     .shortcut-popover {
       width: min(380px, calc(100vw - 24px));
+    }
+
+    .ai-popover {
+      width: min(400px, calc(100vw - 24px));
+      max-height: calc(100vh - 92px);
+      overflow-y: auto;
+    }
+
+    .ai-key-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ink);
+      font-size: 13px;
+      font-family: var(--font-brand), monospace;
+    }
+
+    .ai-key-status::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      flex: 0 0 8px;
+      border-radius: 999px;
+      background: var(--rank);
+    }
+
+    .ai-key-status[data-state="set"]::before {
+      background: var(--good);
+    }
+
+    .ai-config-message:empty {
+      display: none;
+    }
+
+    .ai-config-message {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+
+    .ai-config-message[data-kind="ok"] { color: var(--good); }
+    .ai-config-message[data-kind="warn"] { color: var(--warn); }
+    .ai-config-message[data-kind="error"] { color: var(--bad); }
+
+    #aiPassphraseRow[hidden] {
+      display: none;
+    }
+
+    .unlock-dialog {
+      grid-template-rows: auto auto auto;
+      width: min(420px, 100%);
+      height: auto;
+    }
+
+    .unlock-error {
+      min-height: 1.4em;
+      color: var(--bad);
     }
 
     .user-badge {

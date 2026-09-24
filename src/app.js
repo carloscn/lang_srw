@@ -137,7 +137,6 @@
       replaySlowStep: 0,
       shortcuts: loadShortcutSettings(),
       speechSettings: JSON.parse(localStorage.getItem("langLSRWSpeechSettings") || "{}"),
-      aiSettings: JSON.parse(localStorage.getItem("langLSRWAISettings") || "{}"),
       fontSettings: loadStoredFontSettings(),
       grammarColors: loadStoredGrammarColors(),
       activePage: loadActiveLearningPage(),
@@ -765,6 +764,8 @@
       localStorage.removeItem(userStorageKey(username));
       localStorage.removeItem(progressKey(username));
       localStorage.removeItem(tombstoneKey(username));
+      localStorage.removeItem(aiConfigKey(username));
+      forgetAiKey(username);
       libraryStore.removeAll(username).catch(() => {});
       state.libraries = [];
       showActiveLibrary(null);
@@ -983,6 +984,8 @@
 
     async function loadUserData() {
       loadUserHistory();
+      await migrateLegacyAiSettings();
+      renderAiConfig();
       state.progress = loadProgress();
       try {
         await reloadLibraries();
@@ -1720,19 +1723,23 @@
         $("sourceStatus").textContent = "当前句已有 Ai 语法分析，已使用缓存。";
         return;
       }
-      const settings = mergedAiSettings();
-      if (!settings.apiKey) {
-        alert("请先在“源文件”里填写并保存 API Key。");
+      // Mark busy before waiting for the key: a second click while the unlock
+      // dialog is open must not start a second (paid) request.
+      state.grammarLoading = true;
+      let settings;
+      try {
+        settings = await aiRequestConfig();
+      } catch (error) {
+        state.grammarLoading = false;
+        alert(error.message || error);
         return;
       }
-      state.grammarLoading = true;
       state.grammarVisible = true;
       renderTarget();
       $("analyzeGrammarBtn").disabled = true;
       $("analyzeGrammarBtn").textContent = "分析中";
       try {
-        const baseUrl = settings.baseUrl.replace(/\/+$/, "");
-        const response = await fetch(`${baseUrl}/chat/completions`, {
+        const response = await fetch(`${settings.baseUrl}/chat/completions`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1812,34 +1819,324 @@
       localStorage.setItem("langLSRWShortcuts", JSON.stringify(state.shortcuts));
     }
 
+    // ---- AI configuration ---------------------------------------------------
+    // Base URL and model are plain settings; the API key is protected by
+    // src/secret-store.js (device-encrypted, password-encrypted, or memory only),
+    // stored per user, never shown again after saving, never exported or synced,
+    // and only ever sent to the origin it was saved for.
+    const secrets = window.langLSRWSecretStore;
+    const unlockedAiKeys = new Map(); // user -> API key, this page only
+    let pendingAiUnlock = null; // one unlock dialog at a time; later callers share it
+
     function aiDefaults() {
-      return {
-        baseUrl: "https://api.openai.com/v1",
-        model: "gpt-5.6-luna",
-        apiKey: ""
+      return { baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-luna", protection: "device" };
+    }
+
+    function aiConfigKey(user = state.currentUser) {
+      return `langLSRWAIConfig:${user}`;
+    }
+
+    function aiSessionKey(user = state.currentUser) {
+      return `langLSRWAISession:${user}`;
+    }
+
+    function loadAiConfig() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(aiConfigKey()) || "null");
+        if (saved && typeof saved === "object") return { ...aiDefaults(), ...saved };
+      } catch {}
+      return aiDefaults();
+    }
+
+    function storeAiConfig(config) {
+      if (state.currentUser) localStorage.setItem(aiConfigKey(), JSON.stringify(config));
+    }
+
+    function aiKeyContext(config) {
+      return { user: state.currentUser, origin: config.keyOrigin };
+    }
+
+    function forgetAiKey(user = state.currentUser) {
+      unlockedAiKeys.delete(user);
+      sessionStorage.removeItem(aiSessionKey(user));
+    }
+
+    // Password mode: after unlocking, keep a device-encrypted copy for this tab
+    // so a reload does not ask again; a new tab or browser restart does.
+    async function rememberAiKeyForTab(config, apiKey) {
+      if (config.protection !== "passphrase") return;
+      const box = await secrets.encrypt(await secrets.deviceKey(), apiKey, aiKeyContext(config));
+      sessionStorage.setItem(aiSessionKey(), JSON.stringify(box));
+    }
+
+    async function sealAiKey(config, apiKey, protection, passphrase = "") {
+      const context = aiKeyContext(config);
+      delete config.box;
+      forgetAiKey();
+      if (protection === "device") config.box = await secrets.encrypt(await secrets.deviceKey(), apiKey, context);
+      if (protection === "passphrase") config.box = await secrets.sealWithPassphrase(passphrase, apiKey, context);
+      config.protection = protection;
+      config.keyHint = secrets.keyHint(apiKey);
+      config.hasKey = protection !== "session";
+      unlockedAiKeys.set(state.currentUser, apiKey);
+      await rememberAiKeyForTab(config, apiKey);
+    }
+
+    // The old build kept {baseUrl, model, apiKey} in clear text, shared by every
+    // user of the browser. Move it into the current user's encrypted config and
+    // delete the clear-text copy even if encryption fails.
+    async function migrateLegacyAiSettings() {
+      const legacy = localStorage.getItem("langLSRWAISettings");
+      if (!legacy || !state.currentUser) return;
+      localStorage.removeItem("langLSRWAISettings");
+      try {
+        const old = JSON.parse(legacy) || {};
+        const checked = secrets.checkBaseUrl(old.baseUrl || aiDefaults().baseUrl);
+        const config = loadAiConfig();
+        if (config.hasKey) return;
+        config.baseUrl = checked.ok ? checked.baseUrl : aiDefaults().baseUrl;
+        config.model = old.model || config.model;
+        if (old.apiKey && checked.ok) {
+          config.keyOrigin = checked.origin;
+          await sealAiKey(config, String(old.apiKey).trim(), "device");
+        }
+        storeAiConfig(config);
+      } catch {
+        // Nothing to recover: the user re-enters the key in 「AI 配置」.
+      }
+    }
+
+    // Resolves the API key, asking for the unlock password when needed.
+    // Returns "" when there is no key or the user cancels.
+    async function getAiKey() {
+      if (unlockedAiKeys.has(state.currentUser)) return unlockedAiKeys.get(state.currentUser);
+      const config = loadAiConfig();
+      if (!config.hasKey || !config.box) return "";
+      const context = aiKeyContext(config);
+      if (config.protection === "device") {
+        const apiKey = await secrets.decrypt(await secrets.deviceKey(), config.box, context);
+        unlockedAiKeys.set(state.currentUser, apiKey);
+        return apiKey;
+      }
+      const tabCopy = sessionStorage.getItem(aiSessionKey());
+      if (tabCopy) {
+        try {
+          const apiKey = await secrets.decrypt(await secrets.deviceKey(), JSON.parse(tabCopy), context);
+          unlockedAiKeys.set(state.currentUser, apiKey);
+          return apiKey;
+        } catch {
+          sessionStorage.removeItem(aiSessionKey());
+        }
+      }
+      if (!pendingAiUnlock) {
+        pendingAiUnlock = (async () => {
+          const apiKey = await unlockWithPassword(config);
+          if (apiKey) {
+            unlockedAiKeys.set(state.currentUser, apiKey);
+            await rememberAiKeyForTab(config, apiKey);
+          }
+          renderAiConfig();
+          return apiKey;
+        })().finally(() => {
+          pendingAiUnlock = null;
+        });
+      }
+      return pendingAiUnlock;
+    }
+
+    // Unlock dialog; a wrong password keeps the dialog open with an error.
+    function unlockWithPassword(config) {
+      return new Promise((resolve) => {
+        const modal = $("aiUnlockModal");
+        const form = $("aiUnlockForm");
+        const input = $("aiUnlockInput");
+        $("aiUnlockHint").textContent = `API Key ${config.keyHint || ""} 用解锁密码加密保存。输入密码后，本标签页内不再询问。`;
+        $("aiUnlockError").textContent = "";
+        input.value = "";
+        modal.hidden = false;
+        input.focus();
+        const finish = (value) => {
+          modal.hidden = true;
+          input.value = "";
+          form.removeEventListener("submit", onSubmit);
+          $("aiUnlockCancelBtn").removeEventListener("click", onCancel);
+          modal.removeEventListener("keydown", onKey);
+          resolve(value);
+        };
+        const onSubmit = async (event) => {
+          event.preventDefault();
+          $("aiUnlockError").textContent = "正在解锁…";
+          try {
+            finish(await secrets.openWithPassphrase(input.value, config.box, aiKeyContext(config)));
+          } catch {
+            $("aiUnlockError").textContent = "密码不对，请重试。忘记密码只能在「AI 配置」里重新填写 Key。";
+            input.select();
+          }
+        };
+        const onCancel = () => finish("");
+        const onKey = (event) => {
+          if (event.key === "Escape") finish("");
+        };
+        form.addEventListener("submit", onSubmit);
+        $("aiUnlockCancelBtn").addEventListener("click", onCancel);
+        modal.addEventListener("keydown", onKey);
+      });
+    }
+
+    // Everything a request needs; throws a user-facing message otherwise.
+    async function aiRequestConfig() {
+      const config = loadAiConfig();
+      const checked = secrets.checkBaseUrl(config.baseUrl);
+      if (!checked.ok) throw new Error(`${checked.error}请在「AI 配置」里修改。`);
+      const apiKey = await getAiKey();
+      if (!apiKey) throw new Error("还没有可用的 API Key，请先在「AI 配置」里填写（或解锁）。");
+      if (config.keyOrigin && config.keyOrigin !== checked.origin) {
+        throw new Error("API Key 保存时的接口地址和现在的不一致，请在「AI 配置」里重新填写 Key。");
+      }
+      return { baseUrl: checked.baseUrl, model: config.model || aiDefaults().model, apiKey };
+    }
+
+    function selectedAiProtection() {
+      return document.querySelector('input[name="aiProtection"]:checked')?.value || "device";
+    }
+
+    function setAiMessage(message, kind = "") {
+      $("aiConfigMessage").textContent = message;
+      $("aiConfigMessage").dataset.kind = kind;
+    }
+
+    function renderAiConfig() {
+      const config = loadAiConfig();
+      $("aiBaseUrlInput").value = config.baseUrl;
+      $("aiModelInput").value = config.model;
+      const protection = document.querySelector(`input[name="aiProtection"][value="${config.protection}"]`);
+      if (protection) protection.checked = true;
+      renderAiProtectionFields();
+      const inMemory = unlockedAiKeys.has(state.currentUser);
+      const labels = {
+        device: "已加密保存在这台设备",
+        passphrase: inMemory ? "已用解锁密码加密保存（本标签页已解锁）" : "已用解锁密码加密保存（使用时需要解锁）",
+        session: "只在本次使用，关闭或刷新页面后清除"
       };
+      const hasKey = config.hasKey || inMemory;
+      $("aiKeyStatus").textContent = hasKey
+        ? `${config.keyHint || "API Key"} · ${labels[config.protection] || labels.device}`
+        : "未设置";
+      $("aiKeyStatus").dataset.state = hasKey ? "set" : "empty";
+      $("clearAiKeyBtn").disabled = !hasKey;
+      $("aiApiKeyInput").value = "";
+      $("aiApiKeyInput").placeholder = hasKey ? "粘贴新的 API Key 以更换（留空则保留）" : "粘贴 API Key";
     }
 
-    function mergedAiSettings() {
-      return { ...aiDefaults(), ...state.aiSettings };
+    function renderAiProtectionFields() {
+      const config = loadAiConfig();
+      const protection = selectedAiProtection();
+      $("aiPassphraseRow").hidden = protection !== "passphrase";
+      $("aiPassphraseLabel").textContent = config.protection === "passphrase" && config.hasKey
+        ? "新的解锁密码（留空则不修改）"
+        : "解锁密码（至少 8 位，忘记后只能重新填写 Key）";
     }
 
-    function loadAiSettings() {
-      const settings = mergedAiSettings();
-      $("aiBaseUrlInput").value = settings.baseUrl;
-      $("aiModelInput").value = settings.model;
-      $("aiApiKeyInput").value = settings.apiKey;
-    }
-
-    function saveAiSettings() {
-      const settings = {
-        baseUrl: $("aiBaseUrlInput").value.trim() || aiDefaults().baseUrl,
+    async function saveAiConfig() {
+      const checked = secrets.checkBaseUrl($("aiBaseUrlInput").value.trim() || aiDefaults().baseUrl);
+      if (!checked.ok) {
+        setAiMessage(checked.error, "error");
+        return;
+      }
+      const previous = loadAiConfig();
+      const protection = selectedAiProtection();
+      const newKey = $("aiApiKeyInput").value.trim();
+      const passphrase = $("aiPassphraseInput").value;
+      const hadKey = previous.hasKey || unlockedAiKeys.has(state.currentUser);
+      const originChanged = Boolean(previous.keyOrigin) && previous.keyOrigin !== checked.origin;
+      const config = {
+        baseUrl: checked.baseUrl,
         model: $("aiModelInput").value.trim() || aiDefaults().model,
-        apiKey: $("aiApiKeyInput").value.trim()
+        protection,
+        keyOrigin: checked.origin
       };
-      state.aiSettings = settings;
-      localStorage.setItem("langLSRWAISettings", JSON.stringify(settings));
-      $("sourceStatus").textContent = "AI 设置已保存。";
+      try {
+        let apiKey = newKey;
+        const reseal = Boolean(newKey)
+          || (hadKey && !originChanged && (protection !== previous.protection || (protection === "passphrase" && passphrase)));
+        if (!apiKey && reseal) apiKey = await getAiKey();
+        if (reseal && !apiKey) {
+          setAiMessage("需要先解锁现有的 API Key 才能更改保存方式。", "error");
+          return;
+        }
+        if (protection === "passphrase" && reseal && passphrase.length < 8) {
+          setAiMessage("解锁密码至少 8 位。", "error");
+          $("aiPassphraseInput").focus();
+          return;
+        }
+        if (reseal) {
+          await sealAiKey(config, apiKey, protection, passphrase);
+        } else if (hadKey && !originChanged) {
+          Object.assign(config, { box: previous.box, keyHint: previous.keyHint, hasKey: previous.hasKey });
+        } else {
+          forgetAiKey();
+        }
+        storeAiConfig(config);
+        $("aiPassphraseInput").value = "";
+        renderAiConfig();
+        setAiMessage(originChanged && !newKey && hadKey
+          ? "接口地址换了域名，原来的 API Key 已清除（防止发到新的服务器），请重新填写。"
+          : "已保存。", originChanged && !newKey && hadKey ? "warn" : "ok");
+      } catch (error) {
+        setAiMessage(`保存失败：${error.message || error}`, "error");
+      }
+    }
+
+    async function testAiConfig() {
+      const checked = secrets.checkBaseUrl($("aiBaseUrlInput").value.trim() || aiDefaults().baseUrl);
+      if (!checked.ok) {
+        setAiMessage(checked.error, "error");
+        return;
+      }
+      const config = loadAiConfig();
+      const typedKey = $("aiApiKeyInput").value.trim();
+      if (!typedKey && config.keyOrigin && config.keyOrigin !== checked.origin) {
+        setAiMessage("接口地址的域名变了：为安全起见，已保存的 Key 不会发给新地址，请粘贴新的 Key 再测试。", "warn");
+        return;
+      }
+      $("testAiConfigBtn").disabled = true;
+      setAiMessage("正在测试…");
+      try {
+        const apiKey = typedKey || await getAiKey();
+        if (!apiKey) {
+          setAiMessage("请先粘贴 API Key。", "error");
+          return;
+        }
+        const response = await fetch(`${checked.baseUrl}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+        if (response.status === 401 || response.status === 403) {
+          setAiMessage(`连接成功，但 Key 被拒绝（HTTP ${response.status}）：请检查 Key 是否正确、是否有权限。`, "error");
+        } else if (!response.ok) {
+          setAiMessage(`接口可以访问，但 /models 返回 HTTP ${response.status}。有些服务不支持这个检查，可以直接试用语法分析。`, "warn");
+        } else {
+          const data = await response.json().catch(() => ({}));
+          const models = Array.isArray(data.data) ? data.data.map((item) => item.id) : [];
+          const model = $("aiModelInput").value.trim() || aiDefaults().model;
+          setAiMessage(models.length
+            ? `连接成功：可用模型 ${models.length} 个${models.includes(model) ? `，包括 ${model}` : `，但没有找到 ${model}，请检查模型名称`}。`
+            : "连接成功。", models.length && !models.includes(model) ? "warn" : "ok");
+        }
+      } catch (error) {
+        setAiMessage(`连接失败：${error.message || error}（网络不通、地址不对，或该服务不允许浏览器直接访问）`, "error");
+      } finally {
+        $("testAiConfigBtn").disabled = false;
+      }
+    }
+
+    function clearAiKey() {
+      if (!confirm("确定清除这台设备上保存的 API Key 吗？接口地址和模型会保留。")) return;
+      const config = loadAiConfig();
+      delete config.box;
+      delete config.keyHint;
+      config.hasKey = false;
+      storeAiConfig(config);
+      forgetAiKey();
+      renderAiConfig();
+      setAiMessage("API Key 已清除。", "ok");
     }
 
     // Theme model mirrors nav.mltz.tech. The initial light/dark value is set by
@@ -2084,9 +2381,10 @@
 
     function isTopMenuOpen() {
       return Boolean(
-        document.querySelector(".source-menu[open], .shortcut-menu[open], .font-menu[open], .user-menu[open]")
+        document.querySelector(".source-menu[open], .shortcut-menu[open], .font-menu[open], .ai-menu[open], .user-menu[open]")
         || !$("libraryModal").hidden
         || !$("importModal").hidden
+        || !$("aiUnlockModal").hidden
       );
     }
 
@@ -3187,7 +3485,7 @@
     }
 
     function closeTopMenus(exceptMenu = null) {
-      document.querySelectorAll(".source-menu, .shortcut-menu, .font-menu, .user-menu").forEach((menu) => {
+      document.querySelectorAll(".source-menu, .shortcut-menu, .font-menu, .ai-menu, .user-menu").forEach((menu) => {
         if (menu !== exceptMenu) menu.removeAttribute("open");
       });
     }
@@ -3299,7 +3597,12 @@
     $("librarySyncBtn").addEventListener("click", () => syncWithCloud({ interactive: true }));
 
     $("saveTranslationBtn").addEventListener("click", saveCurrentTranslation);
-    $("saveAiSettingsBtn").addEventListener("click", saveAiSettings);
+    $("saveAiConfigBtn").addEventListener("click", saveAiConfig);
+    $("testAiConfigBtn").addEventListener("click", testAiConfig);
+    $("clearAiKeyBtn").addEventListener("click", clearAiKey);
+    document.querySelectorAll('input[name="aiProtection"]').forEach((radio) => {
+      radio.addEventListener("change", renderAiProtectionFields);
+    });
     $("openLibraryBtn").addEventListener("click", openLibraryModal);
     $("appNotice").addEventListener("click", () => {
       $("appNotice").hidden = true;
@@ -3593,7 +3896,7 @@
     });
     setInterval(() => scheduleCloudSync(0), 5 * 60 * 1000);
 
-    document.querySelectorAll(".source-menu, .shortcut-menu, .font-menu, .user-menu").forEach((menu) => {
+    document.querySelectorAll(".source-menu, .shortcut-menu, .font-menu, .ai-menu, .user-menu").forEach((menu) => {
       menu.addEventListener("toggle", () => {
         if (menu.open) {
           closeTopMenus(menu);
@@ -3604,7 +3907,7 @@
     });
 
     document.addEventListener("pointerdown", (event) => {
-      if (!event.target.closest(".source-menu, .shortcut-menu, .font-menu, .user-menu")) {
+      if (!event.target.closest(".source-menu, .shortcut-menu, .font-menu, .ai-menu, .user-menu")) {
         closeTopMenus();
       }
       if (!event.target.closest(".grammar-context-menu, #analyzeGrammarBtn")) {
@@ -3671,7 +3974,6 @@
     applyGrammarColors(state.grammarColors, { persist: false });
     setActivePage(state.activePage);
     loadSpeechSettings();
-    loadAiSettings();
     renderShortcutSettings();
     updateSpeechRateIndicator();
     populateVoices();

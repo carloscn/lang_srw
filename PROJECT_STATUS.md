@@ -52,7 +52,8 @@ Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on 
 ### AI grammar analysis
 
 - Manual AI trigger; sentence switching and ordinary practice never trigger paid requests.
-- Personal local API settings stored in browser storage for the current private-use stage.
+- 「AI 配置」 top-bar panel (moved out of 「源文件」): endpoint, model, API key with test connection. The key is stored per user and encrypted (`src/secret-store.js`, tested): device mode (AES-GCM with a non-extractable IndexedDB key), password mode (PBKDF2-SHA256 600k, unlocked once per tab) or memory-only. Ciphertexts are bound to user + API origin; a host change drops the key; only https endpoints (http for localhost). The key is never shown after saving, exported, or synced. The old clear-text `langLSRWAISettings` is migrated and deleted.
+- Content-Security-Policy meta in `index.html` (hashed inline bootstrap, no eval; `tests/csp.test.js` keeps the hash honest).
 - Traditional English teaching grammar is the only enabled runtime framework.
 - Hierarchical grammar JSON rendering with main, first-level, and all-node views.
 - Role-specific colors, expandable nodes, notes, child indicators, and explanations.
@@ -92,7 +93,7 @@ The HTML, CSS, bundled material, generated prompt, and launcher are separated. M
 - AI article generation, writing review, and review-material generation are not implemented yet.
 - There are no shared or curated libraries; every user starts empty and imports their own material.
 - There is no backend or database. Cloud sync exists only for Google users, via their own Drive; the API key and light/dark/palette choice stay per-device.
-- The API key is stored in browser local storage and is acceptable only for private local use.
+- The API key is encrypted in the browser but still usable by script running in the page while unlocked; CSP is the defence. A backend proxy would be needed to offer AI without users bringing their own key.
 - Before public AI access, requests must move behind a backend proxy with quotas and cost controls.
 - Speech recognition and recording depend on browser support and microphone permission.
 - The native system color-picker dialog cannot be customized by the webpage; HEX editing is provided in the settings panel.
