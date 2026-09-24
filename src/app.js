@@ -747,7 +747,7 @@
       const configured = googleDrive.isConfigured();
       $("googleLoginBtn").disabled = !configured;
       $("googleLoginNote").textContent = configured
-        ? "练习记录、设置和 AI 语法缓存会同步到你自己的 Google Drive（隐藏的应用数据目录），换设备登录即可继续。"
+        ? "句库、练习记录、训练进度和设置都存在你自己的 Google Drive「langLSRW」文件夹，换设备登录即可继续。"
         : "Google 登录尚未配置（需要在 index.html 填写 OAuth Client ID，见 deploy/README.md）。";
     }
 

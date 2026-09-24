@@ -1,82 +1,153 @@
 # langLSRW
 
-个人本地优先的外语学习原型（英语为主，也支持西班牙语等），围绕「听说读写」四个模块展开。目前「听」「说」可用于日常本地练习，「读」「写」尚未实现。纯前端页面，没有后端、鉴权或云同步，AI 语法分析是唯一联网功能，且需要手动触发。
+**Listen · Speak · Read · Write** — a browser-based language-practice app built around dictation and shadowing with your own sentence libraries.
 
-## 快速开始
+**Live:** [lang.mltz.tech](https://lang.mltz.tech)
 
-项目是静态页面，需要一个本地 HTTP 服务器（不能直接双击打开 `index.html`，否则句库等文件的 `fetch` 会被浏览器的同源策略拦截）。
+![langLSRW practice view](docs/screenshot.png)
 
-**Windows**
+langLSRW is a static web app with no backend. All learning data belongs to the learner: signed-in users keep it in their own Google Drive, and guests keep it in their browser. The server hosts code only.
 
-```bat
-tools\start-langlsrw-server.bat
-```
+The user interface is currently in Simplified Chinese; button names below are translated.
 
-**Linux / Ubuntu**
+## Features
 
-```bash
-tools/start-langlsrw-server.sh
-```
+**Listening and dictation**
+- Sentence-by-sentence dictation with live word-level feedback, plus accuracy, speed, fluency, and error statistics.
+- Read-aloud at normal and slower speeds, single-word replay, and optional auto-read.
+- Ordered, random, and mistakes-only practice modes, with configurable keyboard shortcuts.
 
-两个脚本都会：从脚本自身位置推算出项目根目录、检查 8848 端口是否被占用（如果是遗留的 `python -m http.server` 会自动关闭，如果是其他程序会提示并退出）、然后用 `python3`（或 `python`）在该端口启动静态服务器。
+**Speaking**
+- Hold-to-speak speech recognition with recording playback.
+- Similarity, missing-word, wrong-word, and extra-word feedback against the model sentence.
 
-启动后打开浏览器访问：
+**Sentence libraries**
+- Import your own material: plain text, TSV, LRC, Anki/Tatoeba exports, pasted text, or a Google Sheet.
+- Every import opens a preview. You can create a new library or append to an existing one. Duplicates are detected regardless of case and spacing, and their translations can be merged, kept, or replaced.
+- Each library has a learning language (English, Spanish, French, German, Italian, or Portuguese). It is detected on import, and voices and speech recognition follow it.
+- The app remembers your position in every library, and you can export any library back to text.
 
-```
-http://localhost:8848/
-```
+**Sync and privacy**
+- Sign in with Google to store libraries, history, progress, and settings in a visible `langLSRW/` folder in your own Drive. Access uses the least-privileged `drive.file` scope.
+- Guest mode keeps everything in the browser (IndexedDB and localStorage), with JSON backup and restore.
 
-## 功能概览
+**AI grammar analysis** (English)
+- On-demand, hierarchical grammar breakdown of the current sentence, cached per sentence to avoid repeat costs.
+- Uses your own OpenAI-compatible API key, which is stored only in your browser.
 
-- **听**：导入 `.txt` / `.lrc` 或粘贴句子列表，顺序/随机/错题练习模式，英式发音朗读、慢速回放、单词回放，听写打分（准确率/速度/流畅度）。
-- **说**：按住说话，语音识别 + 录音，音量条与相似度/漏词/错词/多词反馈，可回放录音并与原句对比。
-- **句库**：服务器上不存任何句库。用户自己导入，推荐 txt 每行一句、用 `|` 分隔两种语言（`Hello | 你好`，`#` 开头为注释），也支持 tsv / lrc / Anki 导出。导入前先预览，可以新建句库或追加到已有句库：重复句子不区分大小写和空格自动去重，翻译可合并 / 保留 / 覆盖；可对调两列；句库可导出为同样格式的 txt。登录 Google 后可以「从 Google 表格导入」（粘贴链接 → Google 文件选择器确认 → 选句子列 / 翻译列），句库记住来源表格，表格改了点「从表格更新」即可合并进来。导入后保存，刷新不丢，记住每个句库练到第几句；Google 用户的句库存成自己 Google Drive「langLSRW/libraries」里的 TSV 文件，可以在 Drive 里改名、下载、删除。原来内置的 3 万条常用句库留在仓库 `data/libraries/common-english-30150/sentences.tsv`，需要时自己导入。每个句库有自己的学习语言（英/西/法/德/意/葡，导入时自动识别，可修改），朗读和语音识别跟着切换；听写默认忽略重音符号。仓库里还有 `data/libraries/spanish-chinese/`（Tatoeba 西中句对 11,057 句，由 `script/build_tatoeba_pairs.py` 生成）。
-- **AI 语法分析**：手动触发，按句子缓存结果，避免重复计费；层级化 JSON 语法树渲染，可查看/复制原始 prompt 和 AI 返回内容。API Key 目前只存在浏览器本地存储，仅适合个人本地使用。
-- **用户与同步**：Google 登录，句库、练习记录、训练进度、设置和 AI 语法缓存都存在用户自己的 Google Drive「langLSRW」文件夹（无需后端）；也可用本机用户（游客模式，本地存储、JSON 导入导出）。配置步骤见 [deploy/README.md](deploy/README.md)。
-- **通用设置**：与 nav.mltz.tech 一致的界面风格（浅色/深色跟随系统 + 默认绿/GitHub/Reddit/Twitter 四套色系，外加 Anki 风格）、语法角色配色自定义、可配置快捷键。
+**Interface**
+- Light and dark modes that follow the system, with five colour palettes: default, GitHub, Reddit, Twitter, and Anki.
+- Configurable grammar-role colours and fonts, and a responsive layout down to phone width.
 
-更详细的实现状态、架构和已知边界见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。
+## Importing sentences
 
-## 项目结构
+The recommended format is a UTF-8 text file with one sentence per line and `|` between the sentence and its translation:
 
 ```text
-langLSRW/
-  index.html
-  src/
-    app.js                 # 主逻辑（听说读写、设置、用户、语法渲染）
-    library-store.js       # 本机句库存储（IndexedDB）
-    google-drive.js        # Google 登录 + Drive 读写
-    cloud-sync.js          # 同步合并规则（tests/ 有单元测试）
-    styles.css
-    generated/grammar-prompt.js   # 生成产物，勿手改
-  data/                     # 不部署：原内置句库（可手动导入）、示例材料
-    libraries/common-english-30150/sentences.tsv
-    materials/
-  tools/
-    start-langlsrw-server.bat
-    start-langlsrw-server.sh
-  .agents/skills/            # AI 语法分析的 Skill 定义（传统语法 / SIEG2）
-  deploy/                    # 部署到 vpsde（lang.mltz.tech）的脚本与说明
+# Lines starting with # are comments
+Hello | 你好
+¿Qué es eso? | 那是什么？
+Good night | 晚安
 ```
 
-## 部署
+The left side is what you practise and the right side is the prompt. Tick **swap columns** in the import preview to reverse them.
 
-日常仍以本地测试为主。往 `vpsde` 这台 VPS 部署（域名 `lang.mltz.tech`）的脚本、nginx 配置和步骤说明都在 [deploy/README.md](deploy/README.md)，不含任何密钥/Token，需要单独的 SSH 别名配置。
+| Source | Shape |
+|---|---|
+| Text (`.txt`) | `sentence \| translation`, or one sentence per line with an optional translation on the next line |
+| TSV (`.tsv`) | `sentence⇥translation` or `id⇥sentence⇥translation` (Anki / Tatoeba / manythings.org exports work as-is) |
+| Lyrics (`.lrc`) | timestamps are stripped |
+| Google Sheets | paste the link, confirm it in Google's file picker, then choose the sentence and translation columns |
 
-## AI 语法分析的 Skill 机制
+A library imported from a Google Sheet remembers its source. Choose **Update from sheet** after editing the spreadsheet, and new rows are merged in using the same de-duplication rules.
 
-网页里实际生效的语法分析 prompt 来自 `.agents/skills/langlsrw-traditional-grammar-analysis/`，不要直接改 `src/generated/grammar-prompt.js`。改动流程是先改 Skill 里的 prompt 源文本，再跑：
+Two ready-made libraries live in [`data/libraries/`](data/libraries/) and can be imported like any other file:
+
+- `common-english-30150`: 30,150 English–Chinese sentence pairs.
+- `spanish-chinese`: 11,057 Spanish–Chinese pairs from [Tatoeba](https://tatoeba.org), built with [`script/build_tatoeba_pairs.py`](script/build_tatoeba_pairs.py).
+
+## Browser support
+
+Read-aloud and speech recognition use the browser's Web Speech API.
+
+| Browser | Dictation | Read-aloud | Speech recognition |
+|---|---|---|---|
+| Google Chrome, Microsoft Edge | ✅ | ✅ | ✅ |
+| Brave, Chromium | ✅ | ⚠️ often no voices on Linux | ❌ |
+| Firefox | ✅ | ⚠️ system voices only | ❌ |
+
+Chrome or Edge is recommended. When a feature is unavailable, the app explains why instead of failing silently.
+
+## Running locally
+
+The app is plain static files. It needs Python 3 for a local server and a modern browser.
+
+```bash
+tools/start-langlsrw-server.sh        # Linux
+tools\start-langlsrw-server.bat       # Windows
+```
+
+On other systems, any static server works, for example `python3 -m http.server 8848`. Then open <http://localhost:8848/>. Guest mode works immediately. Google sign-in needs an OAuth client configured for that origin; see below.
+
+## Configuration
+
+Google sign-in, Drive sync, and Sheets import are configured with two public values in [`index.html`](index.html):
+
+| Meta tag | Purpose |
+|---|---|
+| `google-client-id` | OAuth 2.0 web client ID (Google Identity Services) |
+| `google-api-key` | Browser API key for the Google Picker, restricted to the site's referrers |
+
+Neither is a secret, and no client secret is used. Step-by-step Google Cloud setup, including the consent screen, the `drive.file` scope, and enabling the Picker and Sheets APIs, is in [`deploy/README.md`](deploy/README.md).
+
+## Project structure
+
+```text
+index.html                  App shell and configuration
+src/
+  app.js                    UI, practice flows, settings, sync orchestration
+  library-import.js         Import parsing, de-duplication, Sheets rows (pure, tested)
+  library-store.js          Per-user library storage in IndexedDB
+  google-drive.js           Google sign-in, Drive files, Picker, Sheets API
+  cloud-sync.js             Merge rules for synced data (pure, tested)
+  styles.css                Design tokens, themes and palettes
+  generated/grammar-prompt.js   Generated; see "Grammar prompt" below
+tests/                      Node unit tests
+data/                       Importable libraries and sample material (not deployed)
+script/                     Data-preparation scripts (Tatoeba pairs, OpenCC conversion)
+tools/                      Local server launchers
+deploy/                     Deployment script, nginx config, setup guide
+.agents/skills/             Grammar-analysis prompt sources
+```
+
+## Development
+
+```bash
+node --test tests/*.test.js           # unit tests: import parsing, merging, sync rules
+node --check src/app.js               # syntax check
+```
+
+**Grammar prompt.** The prompt used by AI grammar analysis is generated from [`.agents/skills/langlsrw-traditional-grammar-analysis/`](.agents/skills/langlsrw-traditional-grammar-analysis/). Edit the skill sources, not `src/generated/grammar-prompt.js`, then regenerate:
 
 ```bash
 node .agents/skills/langlsrw-traditional-grammar-analysis/scripts/build-web-prompt.js
 node .agents/skills/langlsrw-traditional-grammar-analysis/scripts/build-web-prompt.js --check
 ```
 
-`langlsrw-sieg2-grammar-analysis` 是另一套并存的语法框架，目前在 UI 中禁用，不参与运行时。
+## Deployment
 
-## 已知边界
+[`deploy/deploy.sh`](deploy/deploy.sh) syncs only `index.html` and `src/` to the server through an allowlist. It content-hashes every asset URL so browsers never keep stale code. The nginx configuration and one-time setup are documented in [`deploy/README.md`](deploy/README.md).
 
-- 读、写页面未实现；没有复习池、AI 文章生成等能力。
-- 没有后端、鉴权、数据库或云同步；API Key 存在浏览器本地存储，只适合私人本地使用，公开前必须先接后端代理。
-- 语音识别与录音依赖浏览器支持和麦克风权限。
-- 仓库中存在 Sites 托管配置（`.openai/hosting.json`），但部署只能在项目所有者明确要求时进行。
+## Roadmap
+
+- Reading: full articles with vocabulary and phrase notes.
+- Writing: rewriting, summaries, and AI-assisted review.
+- A review queue that combines dictation mistakes, speaking problems, and notes.
+
+Implementation status and known limitations are tracked in [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
+## Acknowledgements
+
+- [Anki](https://apps.ankiweb.net/) inspired the Anki palette and much of the thinking behind sentence-based practice.
+- [Tatoeba](https://tatoeba.org) provides the Spanish–Chinese sentence pairs (CC BY 2.0 FR).
+- [OpenCC](https://github.com/BYVoid/OpenCC) handles Traditional-to-Simplified Chinese conversion in the data scripts.

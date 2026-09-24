@@ -2445,6 +2445,49 @@
       white-space: pre-wrap;
     }
 
+    .site-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 4px 10px;
+      margin-top: 14px;
+      padding: 10px 0 4px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .site-footer a {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      border-radius: var(--radius-sm);
+      padding: 2px 6px;
+      transition: color var(--ease), background var(--ease);
+    }
+
+    .site-footer a:hover {
+      color: var(--green-dark);
+      background: var(--green-soft);
+    }
+
+    .site-footer-icon {
+      flex: 0 0 auto;
+    }
+
+    /* On the login screen the footer sits under the card. */
+    .login-screen {
+      flex-direction: column;
+    }
+
+    .login-screen .site-footer {
+      width: min(420px, 100%);
+      border-top: 0;
+    }
+
     .app-notice {
       position: fixed;
       left: 50%;
