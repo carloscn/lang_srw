@@ -30,7 +30,7 @@ http://localhost:8848/
 
 - **听**：导入 `.txt` / `.lrc` 或粘贴句子列表，顺序/随机/错题练习模式，英式发音朗读、慢速回放、单词回放，听写打分（准确率/速度/流畅度）。
 - **说**：按住说话，语音识别 + 录音，音量条与相似度/漏词/错词/多词反馈，可回放录音并与原句对比。
-- **句库**：服务器上不存任何句库。用户自己导入 txt / lrc / tsv（导入后保存，刷新不丢，记住每个句库练到第几句）；Google 用户的句库存成自己 Google Drive「langLSRW/libraries」里的 TSV 文件，可以在 Drive 里改名、下载、删除。原来内置的 3 万条常用句库留在仓库 `data/libraries/common-english-30150/sentences.tsv`，需要时自己导入。每个句库有自己的学习语言（英/西/法/德/意/葡，导入时自动识别，可修改），朗读和语音识别跟着切换；听写默认忽略重音符号。仓库里还有 `data/libraries/spanish-chinese/`（Tatoeba 西中句对 11,057 句，由 `script/build_tatoeba_pairs.py` 生成）。
+- **句库**：服务器上不存任何句库。用户自己导入，推荐 txt 每行一句、用 `|` 分隔两种语言（`Hello | 你好`，`#` 开头为注释），也支持 tsv / lrc / Anki 导出。导入前先预览，可以新建句库或追加到已有句库：重复句子不区分大小写和空格自动去重，翻译可合并 / 保留 / 覆盖；可对调两列；句库可导出为同样格式的 txt。登录 Google 后可以「从 Google 表格导入」（粘贴链接 → Google 文件选择器确认 → 选句子列 / 翻译列），句库记住来源表格，表格改了点「从表格更新」即可合并进来。导入后保存，刷新不丢，记住每个句库练到第几句；Google 用户的句库存成自己 Google Drive「langLSRW/libraries」里的 TSV 文件，可以在 Drive 里改名、下载、删除。原来内置的 3 万条常用句库留在仓库 `data/libraries/common-english-30150/sentences.tsv`，需要时自己导入。每个句库有自己的学习语言（英/西/法/德/意/葡，导入时自动识别，可修改），朗读和语音识别跟着切换；听写默认忽略重音符号。仓库里还有 `data/libraries/spanish-chinese/`（Tatoeba 西中句对 11,057 句，由 `script/build_tatoeba_pairs.py` 生成）。
 - **AI 语法分析**：手动触发，按句子缓存结果，避免重复计费；层级化 JSON 语法树渲染，可查看/复制原始 prompt 和 AI 返回内容。API Key 目前只存在浏览器本地存储，仅适合个人本地使用。
 - **用户与同步**：Google 登录，句库、练习记录、训练进度、设置和 AI 语法缓存都存在用户自己的 Google Drive「langLSRW」文件夹（无需后端）；也可用本机用户（游客模式，本地存储、JSON 导入导出）。配置步骤见 [deploy/README.md](deploy/README.md)。
 - **通用设置**：与 nav.mltz.tech 一致的界面风格（浅色/深色跟随系统 + 默认绿/GitHub/Reddit/Twitter 四套色系，外加 Anki 风格）、语法角色配色自定义、可配置快捷键。

@@ -148,6 +148,7 @@
       libraries: [],
       activeLibraryId: "",
       progress: null,
+      pendingImport: null,
       library: {
         selectedId: "",
         items: [],
@@ -398,7 +399,11 @@
     }
 
     function downloadJson(filename, data) {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      downloadFile(filename, JSON.stringify(data, null, 2), "application/json");
+    }
+
+    function downloadFile(filename, content, type) {
+      const blob = new Blob([content], { type });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -663,9 +668,10 @@
           name: file.name,
           source: existing?.source || "Google Drive",
           language: file.language || existing?.language || "en",
+          sheet: file.sheet || existing?.sheet || null,
           createdAt: existing?.createdAt || file.updatedAt,
           updatedAt: file.updatedAt,
-          items: parseTsvLibrary(await googleDrive.downloadLibrary(file.fileId), { hasIdColumn: true }),
+          items: importer.parseTsvLibrary(await googleDrive.downloadLibrary(file.fileId), { hasIdColumn: true }),
           driveFileId: file.fileId
         });
         changed.add(file.libraryId);
@@ -775,115 +781,6 @@
       showLogin();
     }
 
-    function cleanSentenceLine(line) {
-      return line
-        .replace(/^\s*\d+[\).]\s*/, "")
-        .trim();
-    }
-
-    function cleanLrcLine(line) {
-      const trimmed = line.trim();
-      if (!trimmed) return "";
-      if (/^\[(ti|ar|al|by|offset|length|re):/i.test(trimmed)) return "";
-      return trimmed
-        .replace(/(?:\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\])+/g, "")
-        .replace(/^\s*[-–—]\s*/, "")
-        .trim();
-    }
-
-    function hasCjk(text) {
-      return /[\u3400-\u9fff]/.test(text || "");
-    }
-
-    function splitInlineTranslation(line) {
-      const patterns = [
-        /^(.+?)\s*(?:\|\||\t|=>|->|：|:)\s*([\u3400-\u9fff].*)$/,
-        /^(.+?)\s{2,}([\u3400-\u9fff].*)$/
-      ];
-      for (const pattern of patterns) {
-        const match = line.match(pattern);
-        if (match && match[1].trim() && match[2].trim()) {
-          return { text: match[1].trim(), translation: match[2].trim() };
-        }
-      }
-      return null;
-    }
-
-    // Tab-separated libraries. Two shapes are accepted:
-    //   id<TAB>sentence<TAB>translation   our Drive format and the old built-in library
-    //   sentence<TAB>translation[<TAB>…]  Anki / manythings.org / Tatoeba exports
-    // hasIdColumn: true for our own Drive files (never guessed, so a download
-    // round-trips exactly); undefined for user imports, where it is detected.
-    function parseTsvLibrary(text, { hasIdColumn } = {}) {
-      const rows = String(text || "")
-        .replace(/^\uFEFF/, "")
-        .split(/\r?\n/)
-        .map((line) => line.split("\t").map((column) => column.trim()))
-        .filter((columns) => columns.length >= 2 && columns.some(Boolean));
-      const withId = hasIdColumn ?? detectIdColumn(rows);
-      const byText = new Map();
-      rows.forEach((columns) => {
-        const [id, sentence, translation] = withId ? columns : ["", columns[0], columns[1]];
-        if (!sentence) return;
-        const existing = byText.get(sentence);
-        if (!existing) {
-          byText.set(sentence, { id: id || "", text: sentence, translation: translation || "" });
-        } else if (translation && !existing.translation.split(" / ").includes(translation)) {
-          // Same sentence listed with several translations (common in Anki decks).
-          existing.translation = existing.translation ? `${existing.translation} / ${translation}` : translation;
-        }
-      });
-      return [...byText.values()];
-    }
-
-    function detectIdColumn(rows) {
-      const sample = rows.slice(0, 200);
-      const numericFirst = sample.filter((columns) => columns.length >= 3 && /^\d+$/.test(columns[0])).length;
-      return sample.length > 0 && numericFirst >= sample.length * 0.8;
-    }
-
-    function looksLikeTsvLibrary(text) {
-      const lines = String(text || "").split(/\r?\n/).filter((line) => line.trim()).slice(0, 200);
-      return lines.length > 0 && lines.filter((line) => line.includes("\t")).length >= lines.length * 0.8;
-    }
-
-    function parseLibraryText(text, filename = "") {
-      return looksLikeTsvLibrary(text) ? parseTsvLibrary(text) : parseSentences(text, filename);
-    }
-
-    function parseSentences(text, filename = "") {
-      const looksLikeLrc = /\.lrc$/i.test(filename) || /\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]/.test(text);
-      const lines = text
-        .split(/\r?\n/)
-        .map((line) => looksLikeLrc ? cleanLrcLine(line) : cleanSentenceLine(line))
-        .filter(Boolean);
-
-      const items = [];
-      lines.forEach((line) => {
-        const inlinePair = splitInlineTranslation(line);
-        if (inlinePair) {
-          items.push(inlinePair);
-          return;
-        }
-
-        if (hasCjk(line)) {
-          const previous = items[items.length - 1];
-          if (previous && !previous.translation) previous.translation = line;
-          return;
-        }
-
-        items.push({ text: line, translation: "" });
-      });
-
-      const seen = new Set();
-      return items.filter((item) => {
-        const key = item.text.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    }
-
     function closeLibraryModal() {
       $("libraryModal").hidden = true;
     }
@@ -952,12 +849,12 @@
     // Each library has the language of its practice sentences; read-aloud,
     // voices and speech recognition follow it. Translations are free-form.
     const learningLanguages = {
-      en: { label: "英语", accents: [["en-GB", "英音"], ["en-US", "美音"]], words: ["the", "is", "you", "i", "to", "a", "and", "it", "of", "that", "what", "this", "are", "do"] },
-      es: { label: "西班牙语", accents: [["es-ES", "西班牙"], ["es-MX", "墨西哥"]], words: ["el", "la", "que", "de", "es", "no", "y", "en", "un", "una", "lo", "los", "por", "qué", "está"] },
-      fr: { label: "法语", accents: [["fr-FR", "法国"], ["fr-CA", "加拿大"]], words: ["le", "la", "les", "est", "je", "vous", "pas", "de", "et", "un", "une", "que", "il", "ce"] },
-      de: { label: "德语", accents: [["de-DE", "德国"]], words: ["der", "die", "das", "ist", "ich", "nicht", "und", "sie", "ein", "zu", "du", "es", "wir"] },
-      it: { label: "意大利语", accents: [["it-IT", "意大利"]], words: ["il", "è", "che", "di", "non", "un", "la", "sono", "ho", "per", "mi", "ti", "lo"] },
-      pt: { label: "葡萄牙语", accents: [["pt-BR", "巴西"], ["pt-PT", "葡萄牙"]], words: ["o", "a", "que", "não", "de", "é", "um", "eu", "você", "em", "se", "uma", "os"] }
+      en: { label: "英语", accents: [["en-GB", "英音"], ["en-US", "美音"]], words: ["the", "is", "you", "i", "to", "a", "and", "it", "of", "that", "what", "this", "are", "do", "hello", "thanks", "thank", "yes", "please", "good"] },
+      es: { label: "西班牙语", accents: [["es-ES", "西班牙"], ["es-MX", "墨西哥"]], words: ["el", "la", "que", "de", "es", "no", "y", "en", "un", "una", "lo", "los", "por", "qué", "está", "hola", "gracias", "sí", "muy", "bien", "buenos", "buenas", "adiós", "yo", "tú", "favor", "días", "noches"] },
+      fr: { label: "法语", accents: [["fr-FR", "法国"], ["fr-CA", "加拿大"]], words: ["le", "la", "les", "est", "je", "vous", "pas", "de", "et", "un", "une", "que", "il", "ce", "merci", "bonjour", "oui", "non", "bonsoir", "suis"] },
+      de: { label: "德语", accents: [["de-DE", "德国"]], words: ["der", "die", "das", "ist", "ich", "nicht", "und", "sie", "ein", "zu", "du", "es", "wir", "danke", "bitte", "ja", "nein", "guten", "tag", "morgen"] },
+      it: { label: "意大利语", accents: [["it-IT", "意大利"]], words: ["il", "è", "che", "di", "non", "un", "la", "sono", "ho", "per", "mi", "ti", "lo", "grazie", "ciao", "sì", "buongiorno", "buonasera", "prego"] },
+      pt: { label: "葡萄牙语", accents: [["pt-BR", "巴西"], ["pt-PT", "葡萄牙"]], words: ["o", "a", "que", "não", "de", "é", "um", "eu", "você", "em", "se", "uma", "os", "obrigado", "obrigada", "olá", "sim", "bom", "dia", "tchau"] }
     };
 
     function languageOf(library) {
@@ -968,11 +865,20 @@
       return languageOf(state.libraries.find((item) => item.id === state.activeLibraryId));
     }
 
-    // Guess from function words in a sample; ties and unknowns fall back to English.
+    // Letters that (almost) only one of the languages uses; they settle short
+    // decks like "Hola | 你好" that have no function words to count.
+    const languageLetters = { es: /[¿¡ñ]/, pt: /[ãõ]/, de: /[äöüß]/, fr: /[œèêëç]/, it: /[òì]/ };
+
+    // Guess from function words and telltale letters in a sample; ties and
+    // unknowns fall back to English.
     function detectLanguage(items) {
       const scores = Object.fromEntries(Object.keys(learningLanguages).map((code) => [code, 0]));
       const sets = Object.entries(learningLanguages).map(([code, info]) => [code, new Set(info.words)]);
       items.slice(0, 400).forEach((item) => {
+        const text = String(item.text).toLowerCase();
+        Object.entries(languageLetters).forEach(([code, letters]) => {
+          if (letters.test(text)) scores[code] += 3;
+        });
         (String(item.text).toLowerCase().match(wordPattern()) || []).forEach((word) => {
           sets.forEach(([code, words]) => {
             if (words.has(word)) scores[code] += 1;
@@ -1001,6 +907,7 @@
     // user they mirror langLSRW/libraries/*.tsv in Drive; progress (active
     // library, position per library, mode) rides in the main sync document.
     const libraryStore = window.langLSRWLibraryStore;
+    const importer = window.langLSRWLibraryImport;
 
     function progressKey(user = state.currentUser) {
       return `langLSRWProgress:${user}`;
@@ -1096,7 +1003,7 @@
       resetCurrent(true);
     }
 
-    async function createLibrary({ name, source, items }) {
+    async function createLibrary({ name, source, items, sheet = null }) {
       if (!state.currentUser) {
         alert("请先登录或选择本机用户，再导入句库。");
         return null;
@@ -1106,6 +1013,7 @@
         id: libraryStore.newId(),
         name: String(name || "未命名句库").trim().slice(0, 80) || "未命名句库",
         source: source || "",
+        sheet,
         language: detectLanguage(items),
         createdAt: now,
         updatedAt: now,
@@ -1189,6 +1097,7 @@
     }
 
     function renderLibraryModal() {
+      $("sheetImportPanel").classList.toggle("is-guest", !isGoogleUser());
       $("libraryStorageNote").textContent = isGoogleUser()
         ? "保存在你的 Google Drive「langLSRW/libraries」文件夹，可以在 Drive 里改名、下载或删除。"
         : "游客模式：句库只保存在这台设备的浏览器里。登录 Google 后可以导入 Drive。";
@@ -1208,6 +1117,9 @@
       $("libraryMeta").textContent = `${libraryMeta(selected)}${selected.source ? ` · 来源 ${selected.source}` : ""}${cloud}`;
       $("useLibraryBtn").textContent = selected.id === state.activeLibraryId ? "继续练习" : "使用此句库";
       $("libraryLanguageSelect").value = languageOf(selected);
+      $("librarySyncBtn").hidden = !isGoogleUser() || Boolean(selected.driveFileId);
+      $("librarySheetUpdateBtn").hidden = !selected.sheet;
+      $("librarySheetOpenBtn").hidden = !selected.sheet;
       renderLibraryPage();
     }
 
@@ -1229,18 +1141,250 @@
         alert("请导入 .txt、.lrc 或 .tsv 文件。");
         return false;
       }
-      const sentences = parseLibraryText(await file.text(), file.name);
-      if (!sentences.length) {
-        alert("没有识别到可练习的句子。");
+      closeTopMenus();
+      return openImportDialog({
+        text: await file.text(),
+        filename: file.name,
+        name: file.name.replace(/\.(txt|lrc|tsv)$/i, ""),
+        source: file.name
+      });
+    }
+
+    // ---- Import dialog ------------------------------------------------------
+    // Every import (file picker, drag & drop, paste) goes through a preview
+    // where the user picks: swap columns, new library vs. append, and what to
+    // do with sentences that already exist. Parsing/merging: src/library-import.js.
+    const formatLabels = { pipe: "竖线「|」分隔", tsv: "Tab 分隔", lrc: "LRC 歌词", lines: "逐行", sheet: "Google 表格" };
+
+    function sheetLayoutFromDialog() {
+      return {
+        textColumn: Number($("importTextColumn").value),
+        translationColumn: Number($("importTranslationColumn").value),
+        hasHeader: $("importHeaderToggle").checked
+      };
+    }
+
+    // Parsed result for the current dialog choices (columns for a sheet, the
+    // swap toggle for text files).
+    function currentImportResult() {
+      const pending = state.pendingImport;
+      if (pending.rows) return importer.rowsToItems(pending.rows, sheetLayoutFromDialog());
+      if (!$("importSwapToggle").checked) return pending.parsed;
+      return { ...pending.parsed, items: importer.mergeItems([], importer.swapColumns(pending.parsed.items)).items };
+    }
+
+    function importItems() {
+      return currentImportResult().items;
+    }
+
+    function columnName(index) {
+      return String.fromCharCode(65 + (index % 26)).repeat(Math.floor(index / 26) + 1);
+    }
+
+    function renderSheetColumnOptions(rows, layout) {
+      const width = Math.max(1, ...rows.map((row) => row.length));
+      const sample = rows[0] || [];
+      const options = Array.from({ length: width }, (_, index) => {
+        const hint = String(sample[index] ?? "").trim().slice(0, 16);
+        return `<option value="${index}">${columnName(index)} 列${hint ? `（${escapeHtml(hint)}）` : ""}</option>`;
+      }).join("");
+      $("importTextColumn").innerHTML = options;
+      $("importTranslationColumn").innerHTML = `<option value="-1">（没有翻译）</option>${options}`;
+      $("importTextColumn").value = String(layout.textColumn);
+      $("importTranslationColumn").value = String(layout.translationColumn);
+      $("importHeaderToggle").checked = layout.hasHeader;
+    }
+
+    function renderImportDialog() {
+      const { source } = state.pendingImport;
+      const parsed = currentImportResult();
+      const items = parsed.items;
+      const parts = [
+        `格式：${formatLabels[parsed.format]}`,
+        `识别到 ${items.length.toLocaleString()} 句（${items.filter((item) => item.translation).length.toLocaleString()} 句有翻译）`
+      ];
+      if (parsed.duplicatesInFile) parts.push(`文件内重复 ${parsed.duplicatesInFile.toLocaleString()} 句已合并`);
+      if (parsed.skipped) parts.push(`跳过 ${parsed.skipped} 行`);
+      $("importSource").textContent = source;
+      $("importSummary").textContent = parts.join(" · ");
+      $("importPreview").innerHTML = items.slice(0, 8).map((item) => `
+        <div class="library-sentence-row import-row">
+          <span class="library-sentence-english">${escapeHtml(item.text)}</span>
+          <span class="library-sentence-translation">${escapeHtml(item.translation) || "<em>（无翻译）</em>"}</span>
+        </div>`).join("") + (items.length > 8 ? `<div class="small-note import-more">… 另外 ${(items.length - 8).toLocaleString()} 句</div>` : "");
+
+      const target = document.querySelector('input[name="importTarget"]:checked').value;
+      $("importNameInput").disabled = target !== "new";
+      $("importAppendSelect").disabled = target !== "append";
+      $("importDuplicateOptions").disabled = target !== "append";
+      $("importDriveNote").textContent = isGoogleUser()
+        ? `导入后会自动备份到你的 Google Drive「langLSRW/libraries」${googleDrive.hasToken() ? "" : "（当前未连接，点用户菜单里的「立即同步」后上传）"}。`
+        : "游客模式：句库只保存在这台设备的浏览器里。用 Google 登录后可以把句库一起导入 Drive。";
+      $("confirmImportBtn").disabled = !items.length;
+    }
+
+    function openImportDialog({ text = "", rows = null, sheet = null, filename = "", name, source }) {
+      if (!state.currentUser) {
+        alert("请先登录或选择本机用户，再导入句库。");
         return false;
       }
-      closeTopMenus();
-      const library = await createLibrary({
-        name: file.name.replace(/\.(txt|lrc|tsv)$/i, ""),
-        source: file.name,
-        items: sentences
-      });
-      return Boolean(library);
+      const layout = rows ? importer.guessSheetLayout(rows) : null;
+      const parsed = rows ? importer.rowsToItems(rows, layout) : importer.parseImport(text, filename);
+      if (!parsed.items.length && !rows?.length) {
+        alert("没有识别到可练习的句子。推荐格式：每行一句，用「|」分隔两种语言，例如：Hello | 你好");
+        return false;
+      }
+      state.pendingImport = { parsed, source, rows, sheet };
+      $("importSheetOptions").hidden = !rows;
+      $("importSwapRow").hidden = Boolean(rows);
+      if (rows) renderSheetColumnOptions(rows, layout);
+      closeLibraryModal();
+      // Re-importing a file with the same name most likely means "add to it".
+      const sameName = state.libraries.find((library) => library.name === name);
+      $("importAppendSelect").innerHTML = state.libraries.map((library) => (
+        `<option value="${escapeHtml(library.id)}">${escapeHtml(library.name)}（${library.items.length.toLocaleString()} 句）</option>`
+      )).join("");
+      $("importAppendSelect").value = sameName?.id || state.activeLibraryId || state.libraries[0]?.id || "";
+      document.querySelector('input[name="importTarget"][value="append"]').disabled = !state.libraries.length;
+      document.querySelector(`input[name="importTarget"][value="${sameName ? "append" : "new"}"]`).checked = true;
+      document.querySelector('input[name="importDuplicates"][value="merge"]').checked = true;
+      $("importNameInput").value = name;
+      $("importSwapToggle").checked = false;
+      renderImportDialog();
+      $("importModal").hidden = false;
+      $("confirmImportBtn").focus();
+      return true;
+    }
+
+    function closeImportDialog() {
+      $("importModal").hidden = true;
+      state.pendingImport = null;
+    }
+
+    async function confirmImport() {
+      if (!state.pendingImport) return;
+      const items = importItems();
+      const { source } = state.pendingImport;
+      const sheet = state.pendingImport.sheet ? { ...state.pendingImport.sheet, ...sheetLayoutFromDialog() } : null;
+      const target = document.querySelector('input[name="importTarget"]:checked').value;
+      const duplicates = document.querySelector('input[name="importDuplicates"]:checked').value;
+      $("confirmImportBtn").disabled = true;
+      try {
+        if (target === "append") {
+          const report = await appendToLibrary($("importAppendSelect").value, items, { duplicates, source, sheet });
+          closeImportDialog();
+          if (report) {
+            showNotice(`已追加到「${report.name}」：新增 ${report.added.toLocaleString()} 句，重复 ${report.duplicates.toLocaleString()} 句${report.translationsUpdated ? `（${report.translationsUpdated.toLocaleString()} 句更新了翻译）` : ""}，现在共 ${report.total.toLocaleString()} 句。`, `import-${Date.now()}`);
+          }
+        } else {
+          const library = await createLibrary({ name: $("importNameInput").value, source, items, sheet });
+          closeImportDialog();
+          if (library) showNotice(`已新建句库「${library.name}」：${library.items.length.toLocaleString()} 句。`, `import-${Date.now()}`);
+        }
+      } catch (error) {
+        $("confirmImportBtn").disabled = false;
+        alert(`导入失败：${error.message || error}`);
+      }
+    }
+
+    async function appendToLibrary(id, items, { duplicates, source, sheet = null }) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library) return null;
+      const merged = importer.mergeItems(library.items, items, { duplicates });
+      const linkChanged = sheet && importer.encodeSheetLink(sheet) !== importer.encodeSheetLink(library.sheet);
+      if (merged.added || merged.translationsUpdated || linkChanged) {
+        const sources = [library.source, source].filter(Boolean);
+        await libraryStore.put(state.currentUser, {
+          ...library,
+          items: merged.items,
+          source: [...new Set(sources)].join("、").slice(0, 200),
+          sheet: sheet || library.sheet || null,
+          updatedAt: new Date().toISOString()
+        });
+        await reloadLibraries();
+        if (state.activeLibraryId === id) {
+          showActiveLibrary(state.libraries.find((item) => item.id === id), state.index);
+          renderTarget();
+        }
+        scheduleCloudSync(500);
+      }
+      return { name: library.name, total: merged.items.length, ...merged };
+    }
+
+    function sheetUrl(sheet) {
+      return `https://docs.google.com/spreadsheets/d/${sheet.id}/edit${sheet.gid !== "" ? `#gid=${sheet.gid}` : ""}`;
+    }
+
+    // Paste a sheet link (optional) -> Google Picker -> read the tab -> preview.
+    async function importFromSheet() {
+      if (!isGoogleUser()) {
+        alert("从 Google 表格导入需要先用 Google 登录。");
+        return;
+      }
+      const value = $("sheetUrlInput").value.trim();
+      const link = value ? importer.parseSheetUrl(value) : null;
+      if (value && !link) {
+        alert("没认出表格链接。请粘贴浏览器地址栏里的 Google 表格网址，例如 https://docs.google.com/spreadsheets/d/…/edit#gid=0");
+        return;
+      }
+      $("sheetImportBtn").disabled = true;
+      try {
+        const picked = await googleDrive.pickSpreadsheet(link?.id || "");
+        if (!picked) return;
+        const data = await googleDrive.readSheet(picked.id, picked.id === link?.id ? link.gid : "");
+        const opened = openImportDialog({
+          rows: data.rows,
+          sheet: { id: picked.id, gid: data.gid },
+          name: data.title || picked.name,
+          source: `Google 表格：${data.title || picked.name} · ${data.tabTitle}`
+        });
+        if (opened) $("sheetUrlInput").value = "";
+      } catch (error) {
+        alert(`读取 Google 表格失败：${error.message || error}`);
+      } finally {
+        $("sheetImportBtn").disabled = false;
+      }
+    }
+
+    // Re-read the linked sheet and merge it in (new sentences appended,
+    // translations merged). Access granted through the Picker persists; if it
+    // is missing (e.g. the link came from another account) pick the file again.
+    async function updateFromSheet(id) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library?.sheet) return;
+      if (!isGoogleUser()) {
+        alert("从表格更新需要先用 Google 登录。");
+        return;
+      }
+      $("librarySheetUpdateBtn").disabled = true;
+      try {
+        if (!googleDrive.hasToken()) await googleDrive.reconnect();
+        let data;
+        try {
+          data = await googleDrive.readSheet(library.sheet.id, library.sheet.gid);
+        } catch (error) {
+          if (error.status !== 403 && error.status !== 404) throw error;
+          const picked = await googleDrive.pickSpreadsheet(library.sheet.id);
+          if (!picked) return;
+          data = await googleDrive.readSheet(library.sheet.id, library.sheet.gid);
+        }
+        const result = importer.rowsToItems(data.rows, library.sheet);
+        const report = await appendToLibrary(id, result.items, {
+          duplicates: "merge",
+          source: `Google 表格：${data.title} · ${data.tabTitle}`
+        });
+        showNotice(`已从表格更新「${report.name}」：新增 ${report.added.toLocaleString()} 句${report.translationsUpdated ? `，${report.translationsUpdated.toLocaleString()} 句补充了翻译` : ""}，现在共 ${report.total.toLocaleString()} 句。`, `sheet-${Date.now()}`);
+      } catch (error) {
+        alert(`从表格更新失败：${error.message || error}`);
+      } finally {
+        $("librarySheetUpdateBtn").disabled = false;
+      }
+    }
+
+    function exportLibraryText(id) {
+      const library = state.libraries.find((item) => item.id === id);
+      if (!library) return;
+      downloadFile(`${library.name}.txt`, importer.toPipeText(library.items), "text/plain;charset=utf-8");
     }
 
     function currentSentence() {
@@ -1942,6 +2086,7 @@
       return Boolean(
         document.querySelector(".source-menu[open], .shortcut-menu[open], .font-menu[open], .user-menu[open]")
         || !$("libraryModal").hidden
+        || !$("importModal").hidden
       );
     }
 
@@ -3125,15 +3270,33 @@
       event.target.value = "";
     });
 
-    $("useTextBtn").addEventListener("click", async () => {
-      const sentences = parseLibraryText($("sentenceInput").value);
-      if (!sentences.length) return;
+    $("useTextBtn").addEventListener("click", () => {
+      if (!$("sentenceInput").value.trim()) return;
       const stamp = new Date().toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-      if (await createLibrary({ name: `粘贴内容 ${stamp}`, source: "粘贴", items: sentences })) {
+      if (openImportDialog({ text: $("sentenceInput").value, name: `粘贴内容 ${stamp}`, source: "粘贴" })) {
         $("sentenceInput").value = "";
         closeTopMenus();
       }
     });
+    $("closeImportBtn").addEventListener("click", closeImportDialog);
+    $("importModal").addEventListener("pointerdown", (event) => {
+      if (event.target === $("importModal")) closeImportDialog();
+    });
+    $("confirmImportBtn").addEventListener("click", confirmImport);
+    $("importModal").addEventListener("change", (event) => {
+      if (event.target.matches('#importSwapToggle, #importTextColumn, #importTranslationColumn, #importHeaderToggle, input[name="importTarget"]')) renderImportDialog();
+    });
+    $("exportLibraryBtn").addEventListener("click", () => exportLibraryText(state.library.selectedId));
+    $("sheetImportBtn").addEventListener("click", importFromSheet);
+    $("sheetUrlInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") importFromSheet();
+    });
+    $("librarySheetUpdateBtn").addEventListener("click", () => updateFromSheet(state.library.selectedId));
+    $("librarySheetOpenBtn").addEventListener("click", () => {
+      const library = state.libraries.find((item) => item.id === state.library.selectedId);
+      if (library?.sheet) window.open(sheetUrl(library.sheet), "_blank", "noopener");
+    });
+    $("librarySyncBtn").addEventListener("click", () => syncWithCloud({ interactive: true }));
 
     $("saveTranslationBtn").addEventListener("click", saveCurrentTranslation);
     $("saveAiSettingsBtn").addEventListener("click", saveAiSettings);
@@ -3455,6 +3618,7 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeLibraryModal();
+        if (!$("importModal").hidden) closeImportDialog();
         closeAiTextModal();
         closeTopMenus();
         closeGrammarContextMenu();

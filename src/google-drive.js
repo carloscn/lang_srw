@@ -38,6 +38,16 @@
     return Boolean(clientId());
   }
 
+  // The Picker needs a browser API key (public, restricted to this site) and
+  // the Cloud project number, which is the prefix of the OAuth client id.
+  function apiKey() {
+    return document.querySelector('meta[name="google-api-key"]')?.content.trim() || "";
+  }
+
+  function projectNumber() {
+    return clientId().split("-")[0];
+  }
+
   function loadGis() {
     if (window.google?.accounts?.oauth2) return Promise.resolve();
     if (gisPromise) return gisPromise;
@@ -131,7 +141,20 @@
       error.code = "token_expired";
       throw error;
     }
-    if (!response.ok) throw new Error(`Google 接口错误（${response.status}）`);
+    if (!response.ok) {
+      let detail = "";
+      try {
+        const body = await response.json();
+        detail = body?.error?.message || "";
+        if (/has not been used|is disabled|SERVICE_DISABLED/i.test(JSON.stringify(body))) {
+          const service = /sheets/i.test(url) ? "Google Sheets API" : "Google Drive API";
+          detail = `Google Cloud 项目还没有启用 ${service}，请先启用（见 deploy/README.md）`;
+        }
+      } catch {}
+      const error = new Error(detail || `Google 接口错误（${response.status}）`);
+      error.status = response.status;
+      throw error;
+    }
     return response;
   }
 
@@ -299,6 +322,7 @@
       libraryId: file.appProperties?.lsrwLibraryId || "",
       name: String(file.name || "").replace(/\.tsv$/i, ""),
       language: file.appProperties?.lsrwLanguage || "",
+      sheet: window.langLSRWLibraryImport?.decodeSheetLink(file.appProperties?.lsrwSheet) || null,
       updatedAt: file.appProperties?.lsrwUpdatedAt || file.modifiedTime || ""
     }));
   }
@@ -317,6 +341,7 @@
         lsrwLibraryId: library.id,
         lsrwUpdatedAt: library.updatedAt,
         lsrwLanguage: library.language || "en",
+        lsrwSheet: window.langLSRWLibraryImport?.encodeSheetLink(library.sheet) || null,
         lsrwSource: String(library.source || "").slice(0, 100)
       }
     };
@@ -332,7 +357,83 @@
     });
   }
 
+  // ---- Google Sheets via the Picker ------------------------------------
+  // Picking a spreadsheet in Google's own Picker grants this app (drive.file)
+  // read access to that one file; the Sheets API then reads its cells.
+  let pickerPromise = null;
+
+  function loadPicker() {
+    if (window.google?.picker) return Promise.resolve();
+    if (pickerPromise) return pickerPromise;
+    pickerPromise = new Promise((resolve, reject) => {
+      const done = () => window.gapi.load("picker", { callback: resolve, onerror: () => reject(new Error("无法加载 Google 文件选择器。")) });
+      if (window.gapi?.load) {
+        done();
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://apis.google.com/js/api.js";
+      script.async = true;
+      script.onload = done;
+      script.onerror = () => {
+        pickerPromise = null;
+        reject(new Error("无法加载 Google 文件选择器，请检查网络。"));
+      };
+      document.head.appendChild(script);
+    });
+    return pickerPromise;
+  }
+
+  // Must start from a click (it may need a token popup). Resolves to
+  // { id, name } or null when the user cancels.
+  async function pickSpreadsheet(fileId = "") {
+    if (!apiKey()) throw new Error("还没有配置 Google API 密钥（index.html 里的 google-api-key），见 deploy/README.md。");
+    if (!hasToken()) await requestToken();
+    await loadPicker();
+    const { picker } = window.google;
+    const view = new picker.DocsView(picker.ViewId.SPREADSHEETS).setMode(picker.DocsViewMode.LIST);
+    if (fileId && typeof view.setFileIds === "function") view.setFileIds(fileId);
+    return new Promise((resolve) => {
+      new picker.PickerBuilder()
+        .addView(view)
+        .setOAuthToken(accessToken)
+        .setDeveloperKey(apiKey())
+        .setAppId(projectNumber())
+        .setTitle(fileId ? "确认要导入的表格" : "选择要导入的 Google 表格")
+        .setLocale("zh-CN")
+        .setCallback((data) => {
+          if (data.action === picker.Action.PICKED) {
+            const doc = data.docs?.[0];
+            resolve(doc ? { id: doc.id, name: doc.name || "" } : null);
+          } else if (data.action === picker.Action.CANCEL) {
+            resolve(null);
+          }
+        })
+        .build()
+        .setVisible(true);
+    });
+  }
+
+  // Read one tab (by gid; first tab when empty) as rows of strings.
+  async function readSheet(id, gid = "") {
+    const SHEETS = "https://sheets.googleapis.com/v4/spreadsheets";
+    const meta = await (await api(`${SHEETS}/${id}?fields=properties.title,sheets.properties(sheetId,title)`)).json();
+    const tabs = meta.sheets || [];
+    const tab = tabs.find((sheet) => String(sheet.properties.sheetId) === String(gid)) || tabs[0];
+    if (!tab) throw new Error("这个表格里没有工作表。");
+    const range = encodeURIComponent(`'${tab.properties.title.replace(/'/g, "''")}'`);
+    const values = await (await api(`${SHEETS}/${id}/values/${range}?majorDimension=ROWS&valueRenderOption=FORMATTED_VALUE`)).json();
+    return {
+      title: meta.properties?.title || "",
+      tabTitle: tab.properties.title,
+      gid: String(tab.properties.sheetId),
+      rows: values.values || []
+    };
+  }
+
   window.langLSRWGoogleDrive = {
+    pickSpreadsheet,
+    readSheet,
     isConfigured,
     getProfile,
     hasToken,

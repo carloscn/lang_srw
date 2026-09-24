@@ -2240,7 +2240,7 @@
 
     .library-sidebar {
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
+      grid-template-rows: auto auto minmax(0, 1fr);
       min-height: 0;
       align-content: start;
       gap: 4px;
@@ -2274,6 +2274,37 @@
     .library-import-btn {
       width: 100%;
       margin-bottom: 6px;
+    }
+
+    .sheet-import {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .sheet-import input {
+      min-height: 32px;
+      font-size: 12px;
+    }
+
+    .sheet-import-guest {
+      display: none;
+    }
+
+    .sheet-import.is-guest input,
+    .sheet-import.is-guest button {
+      display: none;
+    }
+
+    .sheet-import.is-guest .sheet-import-guest {
+      display: block;
+    }
+
+    .import-options[hidden],
+    #importSwapRow[hidden] {
+      display: none;
     }
 
     .library-list {
@@ -2320,6 +2351,98 @@
     .library-actions .library-language {
       width: auto;
       min-height: 34px;
+    }
+
+    .import-dialog {
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      width: min(760px, 100%);
+      height: auto;
+      max-height: calc(100vh - 36px);
+    }
+
+    .import-body {
+      display: grid;
+      gap: 10px;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 12px 14px;
+    }
+
+    .import-summary {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .import-preview {
+      max-height: 260px;
+    }
+
+    .library-sentence-row.import-row {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .import-more {
+      padding: 6px 9px;
+    }
+
+    .import-options {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px 10px;
+    }
+
+    .import-options legend {
+      padding: 0 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .import-options[disabled] {
+      opacity: 0.55;
+    }
+
+    .radio-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .radio-row input[type="radio"] {
+      accent-color: var(--accent);
+    }
+
+    .radio-row > span {
+      white-space: nowrap;
+    }
+
+    .radio-row input[type="text"],
+    .radio-row select {
+      flex: 1;
+      min-width: 0;
+      min-height: 32px;
+    }
+
+    .import-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      padding: 10px 14px;
+    }
+
+    .import-example {
+      margin: 4px 0 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      padding: 8px 10px;
+      font: 13px/1.6 Consolas, "Microsoft YaHei", monospace;
+      white-space: pre-wrap;
     }
 
     .app-notice {

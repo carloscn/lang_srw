@@ -7,6 +7,9 @@
   <!-- OAuth 2.0 Web client ID from Google Cloud Console (public, not a secret).
        Empty = Google sign-in disabled. Setup: deploy/README.md "Google sign-in". -->
   <meta name="google-client-id" content="180213407454-r5uujgmro3f0o8opcens160nkrn3s85q.apps.googleusercontent.com">
+  <!-- Browser API key for the Google Picker (public; restrict it to this site's
+       HTTP referrers in Cloud Console). Empty = "import from Google Sheets" off. -->
+  <meta name="google-api-key" content="AIzaSyBVHLOHo33UvlhmQPrVwcNmSlbOrUTFgeY">
   <script>
     // Same theme model as nav.mltz.tech: light/dark follows the OS until the
     // user clicks the toggle; palette is independent. Runs before paint.
@@ -29,7 +32,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@600;700&display=swap">
-  <link rel="stylesheet" href="src/styles.css?v=20260923-10">
+  <link rel="stylesheet" href="src/styles.css?v=20260924-1">
 
 </head>
 <body data-active-page="listenPage">
@@ -390,16 +393,25 @@
         <aside class="library-sidebar" aria-label="句库列表">
           <button id="libraryImportBtn" class="primary library-import-btn" type="button">＋ 导入句库</button>
           <input id="libraryFileInput" type="file" accept=".txt,.lrc,.tsv,text/plain,text/tab-separated-values" hidden>
+          <div id="sheetImportPanel" class="sheet-import">
+            <input id="sheetUrlInput" type="text" placeholder="粘贴 Google 表格链接（可不填）" aria-label="Google 表格链接">
+            <button id="sheetImportBtn" type="button">从 Google 表格导入</button>
+            <div class="sheet-import-guest small-note">从 Google 表格导入：需要先用 Google 登录</div>
+          </div>
           <div id="libraryList" class="library-list"></div>
         </aside>
         <section id="libraryEmpty" class="library-empty" hidden>
           <h3>导入你的第一个句库</h3>
-          <p>点左上角「导入句库」，或者把文件拖到练习页面上。支持的格式：</p>
+          <p>点左上角「导入句库」，或者把文件拖到练习页面上。推荐用 txt，每行一句，用「|」分隔两种语言：</p>
+          <pre class="import-example">Hello | 你好
+¿Qué es eso? | 那是什么？
+# 以 # 开头的行是注释</pre>
+          <p>同一个文件重复导入时，可以选择「追加到已有句库」：重复的句子会自动去重，新句子加在后面。其他也支持的格式：</p>
           <ul>
             <li><strong>.txt / .lrc</strong>：一行一句英文，中文翻译可以写在同一行（用 Tab、「=&gt;」或两个以上空格隔开），也可以写在下一行。</li>
             <li><strong>.tsv / 带 Tab 的 .txt</strong>：每行「句子 ⇥ 翻译」，或「序号 ⇥ 句子 ⇥ 翻译」（和 Google Drive 里保存的格式相同）。Anki / Tatoeba 导出的「英文 ⇥ 外语 ⇥ 署名」也可以直接导入，同一句子的多个翻译会合并。</li>
           </ul>
-          <p class="small-note">也可以在「源文件」里粘贴句子，新建一个句库。</p>
+          <p class="small-note">也可以在「源文件」里粘贴句子新建句库；登录 Google 后还可以「从 Google 表格导入」，以后表格改了点「从表格更新」即可。</p>
         </section>
         <section id="libraryDetail" class="library-content" hidden>
           <div class="library-summary">
@@ -416,6 +428,10 @@
                 <option value="it">意大利语</option>
                 <option value="pt">葡萄牙语</option>
               </select>
+              <button id="librarySheetUpdateBtn" type="button" hidden title="重新读取来源表格，新句子追加进来，翻译有变化的会合并">从表格更新</button>
+              <button id="librarySheetOpenBtn" type="button" hidden title="在新标签页打开来源 Google 表格">打开表格</button>
+              <button id="librarySyncBtn" type="button" hidden title="上传到 Google Drive">同步到 Drive</button>
+              <button id="exportLibraryBtn" type="button" title="下载为「句子 | 翻译」格式的 txt，可以直接重新导入">导出 txt</button>
               <button id="renameLibraryBtn" type="button">重命名</button>
               <button id="deleteLibraryBtn" type="button">删除</button>
               <button id="useLibraryBtn" class="primary" type="button">使用此句库</button>
@@ -439,6 +455,57 @@
       </div>
     </div>
   </div>
+  <div id="importModal" class="library-modal" hidden>
+    <div class="library-dialog import-dialog" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+      <div class="library-header">
+        <div>
+          <h2 id="importModalTitle">导入句库</h2>
+          <div id="importSource" class="small-note"></div>
+        </div>
+        <button id="closeImportBtn" type="button">取消</button>
+      </div>
+      <div class="import-body">
+        <div id="importSummary" class="import-summary"></div>
+        <div id="importPreview" class="library-sentence-list import-preview"></div>
+        <label id="importSwapRow" class="check-row">
+          <input id="importSwapToggle" type="checkbox">
+          <span>对调两列：把「|」右边的内容作为练习句子</span>
+        </label>
+        <fieldset id="importSheetOptions" class="import-options" hidden>
+          <legend>表格的列</legend>
+          <label class="radio-row"><span>练习句子</span><select id="importTextColumn" aria-label="练习句子所在的列"></select></label>
+          <label class="radio-row"><span>翻译</span><select id="importTranslationColumn" aria-label="翻译所在的列"></select></label>
+          <label class="check-row">
+            <input id="importHeaderToggle" type="checkbox">
+            <span>第一行是表头（不导入）</span>
+          </label>
+        </fieldset>
+        <fieldset class="import-options">
+          <legend>导入到</legend>
+          <label class="radio-row">
+            <input type="radio" name="importTarget" value="new" checked>
+            <span>新建句库</span>
+            <input id="importNameInput" type="text" maxlength="80" aria-label="新句库名称">
+          </label>
+          <label class="radio-row">
+            <input type="radio" name="importTarget" value="append">
+            <span>追加到已有句库</span>
+            <select id="importAppendSelect" aria-label="追加到的句库"></select>
+          </label>
+        </fieldset>
+        <fieldset id="importDuplicateOptions" class="import-options">
+          <legend>追加时遇到已有的句子（不区分大小写和空格）</legend>
+          <label class="radio-row"><input type="radio" name="importDuplicates" value="merge" checked><span>合并翻译（推荐）</span></label>
+          <label class="radio-row"><input type="radio" name="importDuplicates" value="keep"><span>保留原有翻译</span></label>
+          <label class="radio-row"><input type="radio" name="importDuplicates" value="replace"><span>用新翻译覆盖</span></label>
+        </fieldset>
+        <div id="importDriveNote" class="small-note"></div>
+      </div>
+      <div class="import-actions">
+        <button id="confirmImportBtn" class="primary" type="button">导入</button>
+      </div>
+    </div>
+  </div>
   <div id="aiTextModal" class="ai-text-modal" hidden>
     <div class="ai-text-dialog" role="dialog" aria-modal="true" aria-labelledby="aiTextModalTitle">
       <div class="ai-text-header">
@@ -458,10 +525,11 @@
     <button id="copyAiContextBtn" type="button" role="menuitem">复制</button>
   </div>
   <script src="src/generated/grammar-prompt.js?v=20260921-10"></script>
+  <script src="src/library-import.js?v=20260924-1"></script>
   <script src="src/library-store.js?v=20260923-1"></script>
   <script src="src/cloud-sync.js?v=20260923-2"></script>
-  <script src="src/google-drive.js?v=20260923-2"></script>
-  <script src="src/app.js?v=20260923-6"></script>
+  <script src="src/google-drive.js?v=20260924-1"></script>
+  <script src="src/app.js?v=20260924-1"></script>
 </body>
 </html>
 

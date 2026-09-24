@@ -108,3 +108,22 @@ local (guest) users work as before.
 Notes: access tokens last ~1 hour and Google only issues a new one from a click (it opens
 a popup), so after that the user menu shows 「未连接」 and 「立即同步」 reconnects. Users
 can revoke access at <https://myaccount.google.com/permissions>.
+
+### Import from Google Sheets (Picker) — extra one-time setup
+
+"从 Google 表格导入" opens Google's own file Picker; choosing a spreadsheet there grants
+this app (`drive.file`) read access to that one file, and the Sheets API reads it. No
+broader scope is needed. In the same Cloud project:
+
+1. APIs & Services → Library → enable **Google Picker API** and **Google Sheets API**.
+2. APIs & Services → Credentials → Create credentials → **API key**. Edit it:
+   - Application restrictions → **Websites**: `https://lang.mltz.tech/*` and
+     `http://localhost:8848/*`
+   - API restrictions → restrict key → **Google Picker API**
+3. Paste the key into `<meta name="google-api-key" content="">` in `index.html`,
+   commit, deploy. Like the client ID it is public by design; the referrer
+   restriction is what protects it.
+
+The Picker's App ID is the project number, taken automatically from the client ID
+prefix. A library imported from a sheet remembers it (also synced to Drive as the
+`lsrwSheet` appProperty), so 「从表格更新」 re-reads it later and merges changes.
