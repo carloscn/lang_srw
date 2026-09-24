@@ -44,9 +44,31 @@ Real paths on vpsde (not in this repo, live only on the box):
    curl -s https://lang.mltz.tech/ | grep -o '<title>[^<]*</title>'
    ```
 
-## Redeploying content
+## Automatic deployment (GitHub Actions)
 
-Only step 2 above — just run `deploy/deploy.sh` again (`--dry-run` to preview). No sudo,
+Every push to `master` runs [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml):
+unit tests, syntax checks and the grammar-prompt check first, then — only if they pass —
+`deploy/deploy.sh` to vpsde, then a check that `https://lang.mltz.tech/` references the
+new `src/app.js?v=<hash>`. Pull requests run the tests only. Runs are listed under the
+repository's **Actions** tab; a manual run is available via *Run workflow*.
+
+How the runner reaches vpsde:
+
+- A dedicated key (`github-actions-deploy@lang_srw`) is in `~/.ssh/authorized_keys` on
+  vpsde as `restrict,command="/usr/bin/rrsync /home/carlos/langlsrw/public" ssh-ed25519 …`.
+  It can only rsync inside the site directory: no shell, no commands, no forwarding,
+  no `..`.
+- Repository secrets: `DEPLOY_SSH_KEY` (that private key), `DEPLOY_KNOWN_HOSTS` (vpsde's
+  pinned ed25519 host key), `DEPLOY_HOST` (`user@origin-ip`). The origin address is a
+  secret because the site sits behind Cloudflare; don't write it into the public repo.
+- To rotate: generate a new key, replace the `github-actions-deploy@lang_srw` line on
+  vpsde, update `DEPLOY_SSH_KEY`. To disable: delete that line.
+
+Nginx config changes are **not** automated — they still need sudo (step 3 above).
+
+## Redeploying content by hand
+
+Normally not needed (pushing to `master` deploys). Otherwise: step 2 above — run `deploy/deploy.sh` again (`--dry-run` to preview). No sudo,
 no nginx changes needed for ordinary content updates.
 
 **No manual cache-busting.** nginx serves js/css/tsv as `immutable` for 30 days, so
