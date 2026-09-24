@@ -49,6 +49,13 @@ Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on 
 - Similarity, omitted-word, wrong-word, extra-word, and volume feedback.
 - Recording playback and model-sentence comparison controls.
 
+### Sentence components (syntax parser)
+
+- 「成分分析」 button: free, instant sentence components for English and Spanish, shown in the same panel and renderer as the AI analysis (levels 主干 / 一级 / 全部).
+- `services/parser`: FastAPI + spaCy 3.8 (`en_core_web_sm`, `es_core_news_sm`) in Docker on vpsde, `127.0.0.1:18300`, proxied by nginx as `/api/parse` (3 req/s per visitor via CF-Connecting-IP, burst 20, 4 KB bodies, 500-char texts). Stateless. Deployed by hand with `deploy/deploy-parser.sh` (the Actions key can only sync the static site).
+- `src/syntax-tree.js` maps dependency labels (ClearNLP for English, UD for Spanish) to traditional roles: predicate boundary with tense/voice naming, there-be, formal subject, passive agent, double objects, object complements, clause types, prepositional phrases, imperatives, fragments. Corrects the Spanish small model's frequent future-as-present tagging by word form. Tested against real parses (`tests/fixtures/spacy-parses.json`).
+- Small models are sometimes wrong (e.g. attachment of adverbial clauses, some Spanish POS); the panel labels results 「自动分析」.
+
 ### AI grammar analysis
 
 - Manual AI trigger; sentence switching and ordinary practice never trigger paid requests.

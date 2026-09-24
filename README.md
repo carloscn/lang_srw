@@ -31,6 +31,9 @@ The user interface is currently in Simplified Chinese; button names below are tr
 - Sign in with Google to store libraries, history, progress, and settings in a visible `langLSRW/` folder in your own Drive. Access uses the least-privileged `drive.file` scope.
 - Guest mode keeps everything in the browser (IndexedDB and localStorage), with JSON backup and restore.
 
+**Sentence components** (English, Spanish)
+- One click marks subject, predicate (with tense and voice), object, predicative, complement, attributive and adverbial, down to clauses and phrases. It is free and instant, powered by a [spaCy](https://spacy.io) dependency parser on the server and mapped to traditional teaching grammar in the browser. Being automatic, it can be wrong on hard sentences.
+
 **AI grammar analysis** (English)
 - On-demand, hierarchical grammar breakdown of the current sentence, cached per sentence to avoid repeat costs.
 - Uses your own OpenAI-compatible endpoint and API key, configured under **AI settings**.
@@ -120,10 +123,12 @@ src/
   library-import.js         Import parsing, de-duplication, Sheets rows (pure, tested)
   library-store.js          Per-user library storage in IndexedDB
   secret-store.js           API-key encryption and endpoint checks (pure, tested)
+  syntax-tree.js            Dependency parse -> sentence components (pure, tested)
   google-drive.js           Google sign-in, Drive files, Picker, Sheets API
   cloud-sync.js             Merge rules for synced data (pure, tested)
   styles.css                Design tokens, themes and palettes
   generated/grammar-prompt.js   Generated; see "Grammar prompt" below
+services/parser/            Syntax parser service (spaCy + FastAPI, Docker)
 tests/                      Node unit tests
 data/                       Importable libraries and sample material (not deployed)
 script/                     Data-preparation scripts (Tatoeba pairs, OpenCC conversion)
@@ -135,7 +140,7 @@ deploy/                     Deployment script, nginx config, setup guide
 ## Development
 
 ```bash
-node --test tests/*.test.js           # unit tests: import, merging, sync, key encryption, CSP
+node --test tests/*.test.js           # unit tests: import, merging, sync, key encryption, CSP, components
 node --check src/app.js               # syntax check
 ```
 
@@ -150,6 +155,8 @@ node .agents/skills/langlsrw-traditional-grammar-analysis/scripts/build-web-prom
 
 Every push is tested by [GitHub Actions](.github/workflows/deploy.yml); publishing a GitHub Release deploys that release to production once its tests pass. The workflow runs [`deploy/deploy.sh`](deploy/deploy.sh), which syncs only `index.html` and `src/` to the server through an allowlist. It content-hashes every asset URL so browsers never keep stale code. The nginx configuration and one-time setup are documented in [`deploy/README.md`](deploy/README.md).
 
+The syntax parser runs as a small Docker service on the same server, behind nginx at `/api/parse` with per-visitor rate limiting. It stores nothing. [`deploy/deploy-parser.sh`](deploy/deploy-parser.sh) builds and restarts it.
+
 ## Roadmap
 
 - Reading: full articles with vocabulary and phrase notes.
@@ -162,4 +169,5 @@ Implementation status and known limitations are tracked in [`PROJECT_STATUS.md`]
 
 - [Anki](https://apps.ankiweb.net/) inspired the Anki palette and much of the thinking behind sentence-based practice.
 - [Tatoeba](https://tatoeba.org) provides the Spanish–Chinese sentence pairs (CC BY 2.0 FR).
+- [spaCy](https://spacy.io) provides the dependency parses behind sentence components.
 - [OpenCC](https://github.com/BYVoid/OpenCC) handles Traditional-to-Simplified Chinese conversion in the data scripts.

@@ -76,6 +76,19 @@ How the runner reaches vpsde:
 
 Nginx config changes are **not** automated — they still need sudo (step 3 above).
 
+## Syntax parser service
+
+`services/parser` (FastAPI + spaCy, Docker) serves `POST /api/parse` for 「成分分析」.
+It runs on vpsde as the `langlsrw-parser` container from `/home/carlos/langlsrw/parser`,
+listening on `127.0.0.1:18300` only; nginx proxies `/api/parse` to it with per-visitor rate
+limiting (see `nginx-lang-mltz.conf`). It stores nothing.
+
+- Deploy / update: `deploy/deploy-parser.sh` (rsync + `docker compose up -d --build` over the
+  normal `vpsde` SSH alias, then a health check). Not part of GitHub Actions on purpose.
+- Logs: `ssh vpsde 'docker logs langlsrw-parser'`. Health: `https://lang.mltz.tech/api/parse/health`.
+- Limits: 500 characters per text, 4 KB request body, 3 req/s per visitor (burst 20),
+  700 MB container memory (uses ~160 MB).
+
 ## Redeploying content by hand
 
 Normally not needed (publish a Release instead). Otherwise: step 2 above — run `deploy/deploy.sh` again (`--dry-run` to preview). No sudo,

@@ -334,6 +334,12 @@
       background: var(--accent-strong);
     }
 
+    #syntaxAnalyzeBtn.is-active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+    }
+
     #analyzeGrammarBtn.has-cache {
       border-color: var(--good);
       background: color-mix(in srgb, var(--good) 16%, var(--panel));

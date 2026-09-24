@@ -142,6 +142,8 @@
       activePage: loadActiveLearningPage(),
       grammarLoading: false,
       grammarVisible: false,
+      grammarSource: "ai", // "ai" | "syntax": which analysis the panel shows
+      syntaxLoading: false,
       grammarExpansionMode: "main",
       grammarExpandedNodeIds: new Set(),
       libraries: [],
@@ -1522,12 +1524,89 @@
       }
     }
 
+    // ---- Syntax parser (free, instant; services/parser + src/syntax-tree.js) --
+    // Results are cached in memory per language + sentence and never mixed
+    // with the AI grammar cache (which is synced to Drive).
+    const syntaxTree = window.langLSRWSyntaxTree;
+    const syntaxCache = new Map();
+    const syntaxLanguages = new Set(["en", "es"]);
+
+    function syntaxParserUrl() {
+      // Local development can point at a local container:
+      //   localStorage.langLSRWParserUrl = "http://127.0.0.1:18300/api/parse"
+      let override = "";
+      try {
+        override = localStorage.getItem("langLSRWParserUrl") || "";
+      } catch {}
+      if (override) return override;
+      const configured = document.querySelector('meta[name="syntax-parser-url"]')?.content || "/api/parse";
+      // The local static server has no /api: use production (it allows localhost via CORS).
+      if (configured.startsWith("/") && ["localhost", "127.0.0.1"].includes(location.hostname)) {
+        return `https://lang.mltz.tech${configured}`;
+      }
+      return configured;
+    }
+
+    function syntaxKey(sentence = currentSentence()) {
+      return `${activeLanguage()}\n${sentence}`;
+    }
+
+    function displayedGrammar() {
+      return state.grammarSource === "syntax" ? (syntaxCache.get(syntaxKey()) || "") : currentGrammar();
+    }
+
+    async function analyzeCurrentSyntax() {
+      const sentence = currentSentence();
+      const language = activeLanguage();
+      if (!sentence || state.syntaxLoading) return;
+      if (!syntaxLanguages.has(language)) {
+        alert("成分分析目前支持英语和西班牙语。");
+        return;
+      }
+      // Clicking again while it is shown hides it.
+      if (state.grammarVisible && state.grammarSource === "syntax") {
+        state.grammarVisible = false;
+        renderTarget();
+        return;
+      }
+      state.grammarSource = "syntax";
+      resetGrammarInteraction();
+      if (!syntaxCache.has(syntaxKey())) {
+        state.syntaxLoading = true;
+        state.grammarVisible = true;
+        renderTarget();
+        try {
+          const response = await fetch(syntaxParserUrl(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: sentence.slice(0, 500), lang: language })
+          });
+          if (response.status === 429) throw new Error("请求太频繁了，请稍等几秒再试。");
+          if (response.status === 422 || response.status === 413) throw new Error("这句话太长（最多 500 个字符）或语言不受支持。");
+          if (!response.ok) throw new Error(`句法分析服务暂时不可用（HTTP ${response.status}）。`);
+          const tree = syntaxTree.build(await response.json());
+          syntaxCache.set(`${language}\n${sentence}`, JSON.stringify(tree));
+        } catch (error) {
+          state.grammarVisible = false;
+          alert(error instanceof TypeError ? "连不上句法分析服务，请检查网络后再试。" : (error.message || error));
+        } finally {
+          state.syntaxLoading = false;
+        }
+      }
+      if (currentSentence() !== sentence) return; // the user moved on meanwhile
+      state.grammarVisible = syntaxCache.has(syntaxKey());
+      renderTarget();
+    }
+
     function renderGrammarAnalysis() {
       if (state.grammarLoading) {
         return '<div class="grammar-panel is-loading">正在分析语法...</div>';
       }
+      if (state.syntaxLoading && state.grammarSource === "syntax") {
+        return '<div class="grammar-panel is-loading">正在分析句子成分...</div>';
+      }
       if (!state.grammarVisible) return "";
-      const grammar = currentGrammar();
+      const grammar = displayedGrammar();
       if (!grammar) return '<div class="grammar-panel grammar-visual"><div class="grammar-toolbar"><div class="grammar-pattern"><span>句子成分</span></div></div><div class="grammar-empty">当前体系暂无分析</div></div>';
       const parsed = parseGrammarAnalysis(grammar);
       if (!parsed) return `<div class="grammar-panel">${escapeHtml(grammar).replace(/\n/g, "<br>")}</div>`;
@@ -1543,7 +1622,9 @@
         .replace(/）/g, ")")
         .replace(/\s*\+\s*/g, " + ");
       const provenance = grammarAnalysisProvenance(parsed);
-      const analysisLabel = `句子成分${provenance.legacy ? " · 旧版" : ""}${parsed.status === "partial" ? " · 部分分析" : ""}`;
+      const bySyntax = parsed.convention === "syntax-parser/1";
+      if (bySyntax) provenance.label = `句法分析器自动生成（${parsed.source || "spaCy"}），可能有误；需要讲解请用「Ai语法分析」`;
+      const analysisLabel = `句子成分${bySyntax ? " · 自动分析" : ""}${provenance.legacy ? " · 旧版" : ""}${parsed.status === "partial" ? " · 部分分析" : ""}`;
       const patternHtml = pattern
         ? `<div class="grammar-pattern"><span title="${escapeHtml(provenance.label)}">${analysisLabel}</span><span aria-hidden="true">·</span><strong>${escapeHtml(pattern)}</strong></div>`
         : `<div class="grammar-pattern"><span title="${escapeHtml(provenance.label)}">${analysisLabel}</span></div>`;
@@ -1617,7 +1698,7 @@
     }
 
     function setGrammarExpansion(mode) {
-      const parsed = parseGrammarAnalysis(currentGrammar());
+      const parsed = parseGrammarAnalysis(displayedGrammar());
       const nodes = normalizeGrammarNodes(parsed?.nodes);
       const parentIds = new Set(nodes.map((node) => node.parent).filter((id) => id > 0));
       const next = new Set();
@@ -1716,6 +1797,7 @@
       if (state.grammarLoading) return;
       const sentence = currentSentence();
       if (!sentence) return;
+      state.grammarSource = "ai";
       const cachedGrammar = currentGrammar();
       if (cachedGrammar && !force) {
         state.grammarVisible = true;
@@ -3243,6 +3325,12 @@
       const translation = currentTranslation();
       const hasGrammarCache = Boolean(currentGrammar());
       const grammarSupported = activeLanguage() === "en";
+      const syntaxSupported = syntaxLanguages.has(activeLanguage());
+      $("syntaxAnalyzeBtn").disabled = !syntaxSupported;
+      $("syntaxAnalyzeBtn").classList.toggle("is-active", state.grammarVisible && state.grammarSource === "syntax");
+      $("syntaxAnalyzeBtn").title = syntaxSupported
+        ? "免费、即时的句子成分分析（句法分析器，可能有误）"
+        : "成分分析目前支持英语和西班牙语";
       $("analyzeGrammarBtn").disabled = !grammarSupported;
       $("analyzeGrammarBtn").classList.toggle("has-cache", hasGrammarCache);
       $("analyzeGrammarBtn").title = !grammarSupported
@@ -3646,6 +3734,7 @@
       render();
     });
     $("analyzeGrammarBtn").addEventListener("click", () => analyzeCurrentGrammar());
+    $("syntaxAnalyzeBtn").addEventListener("click", () => analyzeCurrentSyntax());
     $("analyzeGrammarBtn").addEventListener("contextmenu", openGrammarContextMenu);
     $("reanalyzeGrammarBtn").addEventListener("click", () => {
       closeGrammarContextMenu();
