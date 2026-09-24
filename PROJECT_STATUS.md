@@ -6,7 +6,7 @@ Last updated: 2026-09-23
 
 langLSRW is currently a personal, local-first language-learning prototype. The listening and speaking workflow is usable for daily local testing. Reading, writing, review pools, article generation, and cloud data are still future work.
 
-Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on Windows or `tools/start-langlsrw-server.sh` on Linux/Ubuntu, then open `http://localhost:8848/`. A Sites hosting configuration exists, but deployment must only happen after the owner explicitly requests it. `deploy/README.md` documents a separate, owner-requested deployment target: the `vpsde` VPS, served at `lang.mltz.tech`.
+Local testing is the default workflow. Run `tools/start-langlsrw-server.bat` on Windows or `tools/start-langlsrw-server.sh` on Linux/Ubuntu, then open `http://localhost:8848/`. Production is `lang.mltz.tech` on the `vpsde` VPS: every push to `master` is tested and deployed by GitHub Actions (`.github/workflows/deploy.yml`, details in `deploy/README.md`).
 
 ## Implemented
 
@@ -82,7 +82,6 @@ langLSRW/
   .agents/skills/
     langlsrw-traditional-grammar-analysis/
     langlsrw-sieg2-grammar-analysis/
-  .openai/hosting.json
 ```
 
 The HTML, CSS, bundled material, generated prompt, and launcher are separated. Most application behavior is still concentrated in `src/app.js`; splitting listening, speaking, storage, settings, and grammar rendering into modules remains architectural work, not a completed migration.
